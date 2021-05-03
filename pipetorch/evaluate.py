@@ -9,7 +9,7 @@ from matplotlib import cm
 from .evaluateresults import EvaluatorResults
 
 class Evaluator:
-    def __init__(self, df, metrics):
+    def __init__(self, df, *metrics):
         self.df = df
         self.metrics = metrics
         self.results = EvaluatorResults.from_evaluator(self)
@@ -29,6 +29,14 @@ class Evaluator:
             y = y.cpu().numpy()
         except: pass
         return y.reshape(-1) if len(y.shape) > 1 else y
+    
+    @property
+    def df(self):
+        return self._df
+    
+    @df.setter
+    def df(self, df):
+        self._df = df
     
     @property
     def train_X(self):
@@ -89,13 +97,21 @@ class Evaluator:
     def run_sklearn(self, model, df=None, **annot):
         self.run(model.fit, model.predict, model=model, df=df, **annot)
 
+    def _inverse_transform_y(self, df, y):
+        if callable(getattr(df, "inverse_transform_y", None)):
+            return df.inverse_transform_y( y )
+        return y
+        
     def _run(self, predict, X, y, df=None, **annot):
+        y_pred = predict(X)
+        self._store(y, y_pred, df=df, **annot)
+
+    def _store(self, y, y_pred, df=None, **annot):
         if df is None:
             df = self.df
-        pred_y = predict(X)
-        y = df.inverse_transform_y( y ).to_numpy()
-        pred_y = df.inverse_transform_y( pred_y ).to_numpy()
-        metrics = self.compute_metrics(y, pred_y)
+        y = self._inverse_transform_y( df, y )
+        y_pred = self._inverse_transform_y( df, y_pred )
+        metrics = self.compute_metrics(y, y_pred)
         self.results = self.results._add(self._dict_to_df(metrics, annot))
 
     def score_train(self, predict, df=None, **annot):
@@ -138,7 +154,7 @@ class Evaluator:
         if callable(y):
             return self.df.inverse_transform_y( y(df.X) ).to_numpy()
         elif type(y) == str:
-            return df[[y]].to_numpy()
+            return np.squeeze(df[[y]].to_numpy())
         return y
     
     def _graph_coords(self, df, *x):
@@ -168,8 +184,7 @@ class Evaluator:
         if type(xlabel) == str:
             plt.xlabel(xlabel)
         graph_x, graph_y = self._graph_coords(df, x, y)
-        ordered_indices = self._order(graph_x)
-        return df.X[ordered_indices], graph_x[ordered_indices], graph_y[ordered_indices]
+        return df.X, graph_x, graph_y
 
     def _figure2d(self, x1=None, x2=None, y=None, xlabel = None, ylabel = None, title = None, df=None ):
         if df is None:
@@ -202,7 +217,7 @@ class Evaluator:
             x2 = x2 + np.random.normal(0, noise * x2_sd, x2.shape)
         return x1, x2
     
-    def scatter2d_class(self, x1=None, x2=None, y=None, xlabel=None, ylabel=None, title=None, markersize=2, loc='upper right', noise=0, df=None, **kwargs):
+    def scatter2d_class(self, x1=None, x2=None, y=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, df=None, **kwargs):
         X, xd1, xd2, y = self._figure2d(x1=x1, x2=x2, y=y, xlabel=xlabel, ylabel=ylabel, title=title, df=df)
         for c in sorted(np.unique(y)):
             indices = (c == y).flatten()
@@ -212,13 +227,13 @@ class Evaluator:
             plt.scatter(xx1, xx2, label=int(c), **kwargs)
         plt.gca().legend(loc=loc)
 
-    def scatter2d_color(self, x1=None, x2=None, c=None, xlabel=None, ylabel=None, title=None, markersize=2, loc='upper right', noise=0, df=None, cmap=plt.get_cmap("jet"), s=1, **kwargs):
+    def scatter2d_color(self, x1=None, x2=None, c=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, df=None, cmap=plt.get_cmap("jet"), s=1, **kwargs):
         X, x1, x2, c = self._figure2d(x1=x1, x2=x2, y=c, xlabel=xlabel, ylabel=ylabel, title=title, df=df)
         x1, x2 = self._add_noise(x1.flatten(), x2.flatten(), noise)
         plt.scatter(x1, x2, c=c, cmap=cmap, s=s, **kwargs)
         plt.colorbar()
         
-    def scatter2d_size(self, x1=None, x2=None, s=None, xlabel=None, ylabel=None, title=None, markersize=2, loc='upper right', noise=0, df=None, **kwargs):
+    def scatter2d_size(self, x1=None, x2=None, s=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, df=None, **kwargs):
         X, x1, x2, s = self._figure2d(x1=x1, x2=x2, y=s, xlabel=xlabel, ylabel=ylabel, title=title, df=df)
         x1, x2 = self._add_noise(x1.flatten(), x2.flatten(), noise)
         plt.scatter(x1, x2, s=s, **kwargs)
@@ -233,12 +248,19 @@ class Evaluator:
                              np.arange(y_min, y_max, stepy))
         X = np.array(np.vstack([xx.ravel(), yy.ravel()])).T
         s = self.df.from_numpy(X)
-        boundary = predict(s.X)
-        return ax, xx, yy, boundary.reshape(xx.shape)        
-
+        try:
+            return ax, xx, yy, predict(s.X).reshape(xx.shape)       
+        except:
+            try:
+                import torch
+                with torch.set_grad_enabled(False):
+                    return ax, xx, yy, predict(s.X_tensor).numpy().reshape(xx.shape)
+            except:
+                raise ValueError('predict mus be a function that works on Numpy arrays or PyTorch tensors')
+    
     def plot_boundary(self, predict):
         ax, xx, yy, boundary = self._boundaries(predict)
-        ax.contour(xx, yy, boundary, levels=[0.5])
+        ax.contour(xx, yy, boundary, levels=[0.5])  
         
     def plot_contour(self, predict):
         ax, xx, yy, boundary = self._boundaries(predict)
@@ -336,13 +358,8 @@ class Evaluator:
   #      self.results.train.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
   #      self.results.valid.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
   #      plt.legend()
-        
-    def scatter_metric(self, x, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
-        self.results.train.scatter(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
-        self.results.valid.scatter(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
-        plt.legend()
-    
-    def line_metric(self, x, by='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
+       
+    def _groups(self, series='phase', select=None):
         if select is None:
             s = self.results
         elif type(select) is pd.core.series.Series:
@@ -351,7 +368,15 @@ class Evaluator:
             s = select
         else:
             raise ValueError('Unknown type passed for select')
-        grouped = s.groupby(by=by)
-        for g, d in grouped:
-            d.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=str(g), **kwargs)
+        for g, d in s.groupby(by=series):
+            yield g, self.results._copy_meta(d)
+    
+    def scatter_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
+        for g, d in self._groups(series=series, select=select):
+            d.scatter(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=label_prefix + str(g), **kwargs)
+        plt.legend()
+    
+    def line_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
+        for g, d in self._groups(series=series, select=select):
+            d.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=label_prefix + str(g), **kwargs)
         plt.legend()

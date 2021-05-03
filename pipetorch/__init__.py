@@ -1,7 +1,17 @@
-from .ptdataframe import PTDataFrame, read_csv, read_excel
+from .ptdataframe import PTDataFrame, read_csv, read_excel, read_pd_csv, PTGroupedDataFrame
 from .databunch import Databunch
-from .datasets import wine_quality, telco_churn, movie_ratings, dam_outflow, boston_housing_prices, iris, bank_marketing, auto_mpg, big_mart_sales, advertising_channels, titanic_survivors, indian_liver, flight_passengers, ames_housing, datasets, diamonds
+from .datasets import wine_quality, telco_churn, movie_ratings, dam_outflow, boston_housing_prices, iris, bank_marketing, auto_mpg, big_mart_sales, advertising_channels, titanic_survivors, indian_liver, flight_passengers, ames_housing, datasets, diamonds, california, movie_titles, nyse50, occupancy
+from .evaluate import Evaluator
 from .version import __version__
+import warnings
+
+class catch_warnings:
+    def __enter__(self):
+        warnings.filterwarnings("error")
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        warnings.filterwarnings("default")
 
 def list_all(s):
     try:

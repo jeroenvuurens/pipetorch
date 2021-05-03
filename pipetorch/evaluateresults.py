@@ -16,6 +16,12 @@ class EvaluatorResults(pd.DataFrame):
     @property
     def _constructor(self):
         return EvaluatorResults
+
+    def _copy_meta(self, df):
+        df = self._constructor(df)
+        for m in self._metadata:
+            setattr(df, m, getattr(self, m))
+        return df
     
     def __finalize__(self, other, method=None, **kwargs):
         for name in self._metadata:
@@ -107,4 +113,11 @@ class EvaluatorResults(pd.DataFrame):
         self._plot(plt.plot, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
     
     def scatter(self, x, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
-        self._plot(plt.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs) 
+        self._plot(plt.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
+        
+    def line_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
+        self._evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
+
+    def scatter_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
+        self._evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
+

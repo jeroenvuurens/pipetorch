@@ -1,9 +1,11 @@
 import numpy as np
 import pandas as pd
 import copy
+from .evaluate import Evaluator
 
 class Databunch:
-    def __init__(self, train_ds, valid_ds, test_ds=None, batch_size=32, num_workers=0, shuffle=True, pin_memory=False, scaler=None, balance=False):
+    def __init__(self, df, train_ds, valid_ds, test_ds=None, batch_size=32, num_workers=0, shuffle=True, pin_memory=False, scaler=None, balance=False):
+        self.df = df
         self.train_ds = train_ds
         self.valid_ds = valid_ds
         self.test_ds = test_ds
@@ -88,6 +90,36 @@ class Databunch:
     
     def inverse_transform_y(self, y):
         return self.scaler.inverse_transform_y(y)
+    
+    def inverse_transform(self, X, y, y_pred, cum=None):
+        return self.df.inverse_transform(X, y, y_pred, cum=cum)
+    
+    def predict(self, model, dl, device=None):
+        import torch
+        model.eval()
+        prev = torch.is_grad_enabled()
+        torch.set_grad_enabled(False)
+        if device is None:
+            try:
+                device = model.device
+            except: pass
+        df = None
+        for X, y in dl:
+            if device is not None:
+                X = X.to(device)
+            y_pred = model.forward(X)
+            df = self.inverse_transform(X, y, y_pred, df)
+        torch.set_grad_enabled(prev)
+        return df
+    
+    def predict_train(self, model, device=None):
+        return self.predict(model, self.train_dl, device=device)
+    
+    def predict_valid(self, model, device=None):
+        return self.predict(model, self.valid_dl, device=device)
+
+    def predict_test(self, model, device=None):
+        return self.predict(model, self.test_dl, device=device)
 
     def sample(self, device=None):
         arrays = next(iter(self.train_dl))
@@ -109,12 +141,15 @@ class Databunch:
 
     @property
     def train_y(self):
-        return self.train_ds.y.tensors[1]
+        return self.train_ds.tensors[1]
 
     @property
     def valid_y(self):
-        return self.valid_ds.y.tensors[1]
+        return self.valid_ds.tensors[1]
 
     @property
     def test_y(self):
-        return self.test_ds.y.tensors[1]
+        return self.test_ds.tensors[1]
+    
+    def to_evaluator(self, *metrics):
+        return Evaluator(self, *metrics)

@@ -3,7 +3,7 @@ rm -r build
 rm -r dist
 rm -r ml.egg-info 
 rm -r ml/__pycache__
-rm /opt/jupyterhub/anaconda/lib/python3.6/site-packages/pipetorch-*
+rm /opt/jupyterhub/anaconda/lib/python3.7/site-packages/pipetorch-*
 python setup.py install
-chmod 775 /opt/jupyterhub/anaconda/lib/python3.6/site-packages/pipetorch-*
+chmod 775 /opt/jupyterhub/anaconda/lib/python3.7/site-packages/pipetorch-*
 
