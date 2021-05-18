@@ -1,7 +1,9 @@
-from .ptdataframe import PTDataFrame, read_csv, read_excel, read_pd_csv, PTGroupedDataFrame
-from .databunch import Databunch
-from .datasets import wine_quality, telco_churn, movie_ratings, dam_outflow, boston_housing_prices, iris, bank_marketing, auto_mpg, big_mart_sales, advertising_channels, titanic_survivors, indian_liver, flight_passengers, ames_housing, datasets, diamonds, california, movie_titles, nyse50, occupancy
-from .evaluate import Evaluator
+from .data import *
+from .evaluate import *
+from .model import *
+from .train import *
+from .gpu import *
+import matplotlib.pyplot as plt
 from .version import __version__
 import warnings
 
