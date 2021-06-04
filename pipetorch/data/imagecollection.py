@@ -3,17 +3,25 @@ import numpy as np
 import torch
 import math
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, random_split, Subset
 import matplotlib.pyplot as plt
-from torchvision.datasets import MNIST, ImageFolder
+from torchvision.datasets import MNIST, ImageFolder, CIFAR10
 from torchvision.transforms import transforms
 import os
 import matplotlib
 import matplotlib.patheffects as PathEffects
 from IPython.core import pylabtools
-from pathlib2 import Path
+from pathlib import Path
 import sys
 from IPython import get_ipython
+from google_images_download import google_images_download
+from tqdm.notebook import tqdm
+import ipywidgets as widgets
+import io
+from PIL import Image, ImageStat
+from getpass import getuser
+from ..evaluate.evaluate import Evaluator
+
 ipython = get_ipython()
 back2gui = { b:g for g, b in pylabtools.backends.items() }
 
@@ -77,7 +85,8 @@ class ImageDataset(Dataset):
         return item
 
 class image_databunch:
-    def __init__(self, train_ds, valid_ds, batch_size=32, valid_batch_size=None, shuffle=True, num_workers=0, pin_memory=False, valid_pin_memory=None, device=torch.device('cuda:0')):
+    def __init__(self, train_ds, valid_ds, batch_size=32, valid_batch_size=None, shuffle=True, num_workers=0, 
+                 pin_memory=False, valid_pin_memory=None, normalized_mean=None, normalized_std=None):
         self.train_ds = train_ds
         self.valid_ds = valid_ds
         self.batch_size = batch_size
@@ -86,7 +95,8 @@ class image_databunch:
         self.num_workers = num_workers
         self.shuffle = shuffle
         self.pin_memory = pin_memory
-        self.to( device )
+        self.normalized_mean = normalized_mean
+        self.normalized_std = normalized_std
 
     @staticmethod
     def balance(X, y):
@@ -136,6 +146,10 @@ class image_databunch:
     def num_workers(self, value):
         self._num_workers = value
         self.reset()
+
+    def evaluate(self, *metrics):
+        #assert len(metrics) > 0, 'You need to provide at least one metric for the evaluation'
+        return Evaluator(self, *metrics)
 
     @property
     def train_dl(self):
@@ -219,19 +233,37 @@ class image_databunch:
                 ax.axis('off')
             plt.tight_layout()
             plt.show()
+   
+    @classmethod
+    def get_transformations_train(cls, size=224, crop_size=None, crop_padding=None, color_jitter=None, rotate=None, do_flip=True, normalize_mean=None, normalize_std=None):
+        return cls.get_transformations(size=size, crop_size=crop_size, crop_padding=crop_padding, color_jitter=color_jitter, rotate=rotate, do_flip=do_flip, normalize_mean=normalize_mean, normalize_std=normalize_std)
 
     @classmethod
-    def get_transformations(cls, size=224, do_flip=True):
+    def get_transformations(cls, size=224, crop_size=None, crop_padding=None, color_jitter=None, rotate=None, do_flip=None, normalize_mean=None, normalize_std=None):
         t = []
+        if rotate is not None:
+            t.append(transforms.RandomRotation(rotate))
+        if color_jitter is not None:
+            t.append(transforms.ColorJitter((*color_jitter)))
+        if crop_size is not None or crop_padding is not None:
+            if crop_size is None:
+                crop_size = size
+            if crop_padding is None:
+                crop_padding = 0
+            #t.append(Resize(crop_size + 2 * crop_padding))
+            t.append(transforms.RandomCrop(crop_size, padding=crop_padding, pad_if_needed=True))
         if size is not None:
             t.append(transforms.Resize([size,size]))
         if do_flip:
             t.append(transforms.RandomHorizontalFlip())
         t.append(transforms.ToTensor())
-        t.append(transforms.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5)))
+        if normalize_mean is not None and normalize_std is not None:
+            t.append(transforms.Normalize(mean=normalize_mean, std=normalize_std))
         return transforms.Compose( t )
 
     def inv_normalize(self):
+        if self.normalized_std is not None and self.normalized_mean is not None:
+            return transforms.Normalize(mean=tuple(-m/s for m, s in zip(self.normalized_mean, self.normalized_std)), std=tuple(1/s for s in self.normalized_std))
         try:
             for l in self.train_ds.transform.transforms:
                 if type(l) == transforms.Normalize:
@@ -242,38 +274,128 @@ class image_databunch:
                 if type(l) == transforms.Normalize:
                     return transforms.Normalize(mean=tuple(-m/s for m, s in zip(l.mean, l.std)), std=tuple(1/s for s in l.std))
         except:pass
+        
         return lambda x:x
 
+    @staticmethod
+    def tensor_ds(ds):
+        try:
+            ds1 = TransformableDataset(ds, transforms.ToTensor())
+            ds1[0][0].shape[0]
+            return ds1
+        except:
+            return ds
+    
+    @staticmethod
+    def channels(ds):
+        return tensor_ds(ds)[0][0].shape[0]
+    
     @classmethod
-    def from_image_folder(cls, path, size=None, transforms=None, valid_size=0.2, **kwargs):
-        if transforms is None:
-            if size is None:
-                size=224
-            transforms = cls.get_transformations(size=size)
-        else:
-            assert size is None, 'Specify size through get_transforms'
-        ds = ImageFolder(root=path, transform=transforms)
-        valid_len = int(valid_size * len(ds))
-        train_len = len(ds) - valid_len
-        train_ds, valid_ds = random_split(ds, [train_len, valid_len])
+    def train_normalize(cls, ds):
+        ds = tensor_ds(ds)
+        channels = channels(ds)
+        total_mean = []
+        total_std = []
+        for c in range(channels):
+            s = torch.cat([X[c].view(-1) for X, y in ds])
+            total_mean.append(s.mean())
+            total_std.append(s.std())
+        return tuple(total_mean), tuple(total_std) 
+    
+    @classmethod
+    def from_image_folder(cls, path, valid_size=0.2, target_transform=None, size=224, crop_size=None, crop_padding=None, color_jitter=None, rotate=None, do_flip=None, normalize_mean=None, normalize_std=None, normalize=False, **kwargs):
+        ds = ImageFolder(root=path, target_transform=target_transform)
+        split = int((1-valid_size) * len(ds))
+        indices = list(range(len(ds)))
+        np.random.shuffle(indices)
+        train_idx, valid_idx = indices[:split], indices[split:]
+        if normalize:
+            assert normalize_mean is None and normalize_std is None, 'You cannot set normalize=True and give the mean or std'
+            normalize_mean, normalize_std = cls.train_normalize(Subset(ds, train_idx))
+        train_transforms = cls.get_transformations_train(size=size, crop_size=crop_size, crop_padding=crop_padding, color_jitter=color_jitter, rotate=rotate, do_flip=do_flip, normalize_mean=normalize_mean, normalize_std=normalize_std)
+        valid_transforms = cls.get_transformations(size=size, normalize_mean=normalize_mean, normalize_std=normalize_std)
+        train_ds = TransformableDataset(Subset(ds, train_idx), train_transforms)
+        valid_ds = TransformableDataset(Subset(ds, valid_idx), valid_transforms)
         return cls(train_ds, valid_ds, **kwargs)
 
     @classmethod
-    def from_image_folders(cls, trainpath, validpath, size=None, transforms=None, **kwargs):
-        if transforms is None:
-            if size is None:
-                size=224
-            transforms = cls.get_transformations(size=size)
+    def from_image_folders(cls, trainpath, validpath, size=None, transform=None, target_transform=None, **kwargs):
+        if type(transform) is int:
+            train_transforms = cls.get_transformations_train(size=transform)
+            valid_transforms = cls.get_transformations(size=transform)
+        elif type(transform) is dict:
+            train_transforms = cls.get_transformations_train(**transform)
+            valid_transforms = cls.get_transformations(**transform)
+        elif type(transform) is tuple:
+            train_transforms, valid_transforms = transform
+        elif transform is None:
+            train_transforms = transforms.Compose( [transforms.ToTensor()] )
+            valid_transforms = train_transforms
         else:
-            assert size is None, 'Specify size through get_transforms'
-        train_ds = ImageFolder(root=trainpath, transform=transforms)
-        valid_ds = ImageFolder(root=validpath, transform=transforms)
+            train_transforms = transform
+            valid_transforms = transform
+ 
+        train_ds = ImageFolder(root=trainpath, transform=train_transforms, target_transform=target_transform)
+        valid_ds = ImageFolder(root=validpath, transform=valid_transforms, target_transform=target_transform)
         return cls(train_ds, valid_ds, **kwargs)
 
+class TransformableDataset(Dataset):
+    def __init__(self, dataset, transform=None):
+        self.dataset = dataset
+        self.transform = transform
+
+    def __getitem__(self, index):
+        x, y = self.dataset[index]
+        if self.transform:
+            x = self.transform(x)
+        return x, y
+    
+    def __len__(self):
+        return len(self.dataset)    
+    
+class Resize(object):
+    def __init__(self, size, interpolation=Image.BILINEAR):
+        self.size = size
+        self.interpolation = interpolation
+
+    def __call__(self, img):
+        old_size = img.size  # old_size[0] is in (width, height) format
+
+        ratio = float(self.size)/min(old_size)
+        new_size = tuple([int(x * ratio) for x in old_size])
+
+        return img.resize(new_size, resample=self.interpolation)
+    
+class FastCIFAR(CIFAR10):
+    def __init__(self, root='/data/datasets/cifarnew/', train=True, transform=None, device=None, size=None, **kwargs):
+        super().__init__(root=root, train=train, **kwargs)
+        self.transform=transform
+        # Scale data to [0,1]
+        self.data = torch.tensor(self.data).float().div(255)
+        self.data = self.data.permute(0, 3, 1, 2)
+        if size is not None:
+            self.data = F.interpolate(self.data, (3, size, size))
+        # Normalize it with the usual MNIST mean and std
+        self.data[:,0] = self.data[:,0].sub_(0.4057).div_(0.2039)
+        self.data[:,1] = self.data[:,1].sub_(0.5112).div_(0.2372)
+        self.data[:,2] = self.data[:,2].sub_(0.5245).div_(0.3238)
+        self.targets = torch.tensor(self.targets)
+        # Put both data and targets on GPU in advance
+        if device is not None:
+            self.data, self.targets = self.data.to(device), self.targets.to(device)
+
+    def __getitem__(self, index):
+        img, target = self.data[index], self.targets[index]
+
+        if self.transform:
+            img = self.transform(img)
+
+        return img, target  
+    
 class FastMNIST(MNIST):
     def __init__(self, *args, transform=None, device=torch.device('cuda:0'), size=None, **kwargs):
         super().__init__(*args, **kwargs)
-
+        self.transform=transform
         # Scale data to [0,1]
         self.data = self.data.unsqueeze(1).float().div(255)
         if size is not None:
@@ -292,43 +414,123 @@ class FastMNIST(MNIST):
 
         return img, target
 
-class FastMNIST3(MNIST):
-    def __init__(self, *args, transform=None, device=None, size=None, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        # Scale data to [0,1]
-        self.data = self.data.unsqueeze(1).float().div(255)
-        if size is not None:
-            self.data = F.interpolate(self.data, (size, size))
-        # Normalize it with the usual MNIST mean and std
-        self.data = self.data.sub_(0.1307).div_(0.3081)
-        # Put both data and targets on GPU in advance
-        if device is not None:
-            self.data, self.targets = self.data.to(device), self.targets.to(device)
+class FastMNIST3(FastMNIST):
+    def __init__(self, *args, transform=None, device=torch.device('cuda:0'), size=None, **kwargs):
+        super().__init__(*args, transform=None, device=torch.device('cuda:0'), **kwargs)
+        self.size = size
 
     def __getitem__(self, index):
         img, target = self.data[index], self.targets[index]
-
+        if self.size is not None:
+            img = F.interpolate(img.unsqueeze(0), (self.size, self.size)).squeeze(0)
         if self.transform:
             img = self.transform(img)
         img = torch.cat([img, img, img], axis=0)
-
         return img, target
 
-def mnist(path='/data/datasets/mnist2', num_workers=0, batch_size=64, transform=None, **kwargs):
-    train_ds = FastMNIST(path, transform=transform, train=True, **kwargs)
-    valid_ds = FastMNIST(path, transform=transform, train=False, **kwargs)
-    db = image_databunch(train_ds, valid_ds, num_workers=num_workers, batch_size=batch_size)
+def mnist(path='/data/datasets/mnist2', batch_size=64, transform=None, size=None, **kwargs):
+    train_ds = FastMNIST(path, transform=transform, train=True, size=size, **kwargs)
+    valid_ds = FastMNIST(path, transform=transform, train=False, size=size, **kwargs)
+    db = image_databunch(train_ds, valid_ds, batch_size=batch_size, 
+                         normalized_mean=(0.1307,), normalized_std=(0.3081,))
     return db
 
-def mnist3(path='/data/datasets/mnist2', num_workers=0, batch_size=64, transform=None, **kwargs):
-    train_ds = FastMNIST3(path, transform=transform, train=True, **kwargs)
-    valid_ds = FastMNIST3(path, transform=transform, train=False, **kwargs)
-    db = image_databunch(train_ds, valid_ds, num_workers=num_workers, batch_size=batch_size)
+def mnist3(path='/data/datasets/mnist2', batch_size=64, size=None, transform=None, **kwargs):
+    train_ds = FastMNIST3(path, transform=transform, train=True, size=size, **kwargs)
+    valid_ds = FastMNIST3(path, transform=transform, train=False, size=size, **kwargs)
+    db = image_databunch(train_ds, valid_ds, batch_size=batch_size, 
+                         normalized_mean=(0.1307, 0.1307, 0.1307), normalized_std=(0.3081, 0.3081, 0.3081))
     return db
 
-def mnist3old(path='/data/datasets/mnist', num_workers=0, batch_size=64, size=28, **kwargs):
-    return image_databunch.from_image_folder(path, transforms=image_databunch.get_transformations(do_flip=False, size=size), num_workers=num_workers, **kwargs)
+def cifar(path='/data/datasets/cifarnew/', batch_size=64, size=None, transform=None, **kwargs):
+    train_ds = FastCIFAR(root=path, transform=transform, train=True, size=size, **kwargs)
+    valid_ds = FastCIFAR(root=path, transform=transform, train=False, size=size, **kwargs)
+    db = image_databunch(train_ds, valid_ds, batch_size=batch_size, 
+                         normalized_mean=(0.4057, 0.5112, 0.5245), normalized_std=(0.2039, 0.2372, 0.3238))
+    return db
 
-def cifar(path='/data/datasets/mnist', num_workers=0, batch_size=64, **kwargs):
-    return image_databunch.from_image_folder(path, transforms=image_databunch.get_transformations(do_flip=False, size=28), num_workers=num_workers, **kwargs)
+def create_path(p, mode=0o777):
+    path = Path(p)
+    os.makedirs(path, mode, exist_ok=True)
+    return path
+
+def image_folder():
+    return f'/tmp/{getuser()}/images'
+
+def _gis_args(keywords, output_directory=None, 
+                 image_directory=None, limit=200, format='jpg', color_type='full-color', 
+                 size='medium', type='photo', delay=0, **kwargs):
+    if output_directory is None:
+        output_directory = str(create_path(image_folder()))
+    if image_directory is None:
+        image_directory = '_'.join(keywords.split())
+    arguments = {"keywords":keywords, 
+                 "limit":limit, "format":format, "color_type":color_type, "size":size, "type":type, 
+                 "delay":delay, "image_directory":image_directory, 
+                 "output_directory":output_directory, "chromedriver":"/usr/bin/chromedriver" }
+    arguments.update(kwargs)
+    return arguments
+
+def crawl_images(keywords, output_directory=None, 
+                 image_directory=None, limit=200, format='jpg', color_type='full-color', 
+                 size='medium', type='photo', delay=0, **kwargs):
+    """
+    Downloads images through Google Image Search, 
+    see https://google-images-download.readthedocs.io/en/latest/arguments.html 
+    for info on the arguments. When no output_directory is given, the downloaded images
+    are stored in /tmp/<username>/images/<query>.
+    """
+    kwargs = _gis_args(keywords, output_directory=output_directory, image_directory=image_directory, 
+             limit=limit, format=format, color_type=color_type, size=size, type=type, delay=delay, 
+             **kwargs)
+    response = google_images_download.googleimagesdownload()   #class instantiation
+    paths = response.download(kwargs)   #passing the arguments to the function
+    
+def filter_images(keywords, folder=None, columns=4, height=200, width=200):
+    """
+    Removes duplicate images and shows the remaining images so that the user can manually select
+    images to remove from the folder by pressing the DELETE button below.
+    """
+    def on_click(button):
+        for r in rows:
+            if type(r) is widgets.HBox:
+                for c in r.children:
+                    checkbox = c.children[1]
+                    if checkbox.value:
+                        print(checkbox.description_tooltip)
+                        os.remove(checkbox.description_tooltip)
+
+    if folder is None:
+        folder = Path(image_folder())
+    keywords = '_'.join(keywords.split())
+    imagefiles = [f for f in folder.glob(keywords + '/*')]
+    rows = []
+    cols = []
+    bymean = {}
+    for i, imgfile in enumerate(tqdm(imagefiles)):
+        row = i // columns
+        col = i % columns
+        img = Image.open(imgfile)
+        m = hash(tuple(ImageStat.Stat(img).mean))
+        buff = io.BytesIO()   
+        img.save(buff, format='JPEG')
+        if m in bymean:
+            os.remove(imgfile)
+        else:
+            bymean[m] = imgfile
+
+        image = widgets.Image( value=buff.getvalue(), width=width, height=height )
+        button = widgets.Checkbox( description='Delete', description_tooltip = str(imgfile) )
+        box = widgets.VBox([image, button])
+        cols.append(box)
+        if len(cols) == columns:
+            rows.append(widgets.HBox(cols))
+            cols = []
+                 
+    if len(cols) > 0:
+        rows.append(widgets.HBox(cols))
+    button = widgets.Button( description='Delete' )
+    button.on_click(on_click)
+    rows.append(button)
+    return widgets.VBox(rows)        
+

@@ -160,12 +160,9 @@ class Evaluator:
     def _graph_coords(self, df, *x):
         return  [ self._graph_coords_callable(df, c) for c in x ]         
 
-    def _figure(self, x=None, y=None, xlabel = None, ylabel = None, title = None, interpolate=0, phase='train', df=None ):
+    def _figure(self, x=None, y=None, xlabel = None, ylabel = None, title = None, sort=False, interpolate=0, phase='train', df=None ):
         if df is None:
             df = self.df.train
-        if interpolate > 0:
-            assert (y is None) or (type(y)==str) or callable(y), 'You cannot interpolate with given results'
-            df = df.interpolate(interpolate)
         x, y = self._column_xy(x, y)
         if not xlabel:
             if type(x) == str:
@@ -183,6 +180,11 @@ class Evaluator:
             plt.ylabel(ylabel) 
         if type(xlabel) == str:
             plt.xlabel(xlabel)
+        if interpolate > 0:
+            assert (y is None) or (type(y)==str) or callable(y), 'You cannot interpolate with given results'
+            df = df.interpolate(interpolate)
+        elif sort:
+            df = df.sort_values(by=x)
         graph_x, graph_y = self._graph_coords(df, x, y)
         return df.X, graph_x, graph_y
 
@@ -341,14 +343,14 @@ class Evaluator:
         plt.xlabel(r'$\theta_0$')
         plt.ylabel(r'$\theta_1$')
         
-    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, title=None, marker=None, interpolate=0, df=None, **kwargs):
-        X, gx, gy = self._figure(x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df)
+    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, **kwargs):
+        X, gx, gy = self._figure(x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
         pltfunction(gx, gy, marker=marker, **kwargs)
         if 'label' in kwargs:
             plt.legend()
     
     def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
-        self._plot(plt.plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs)
+        self._plot(plt.plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, sort=True, df=df, **kwargs)
 
     def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
         self._plot(plt.scatter, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs)

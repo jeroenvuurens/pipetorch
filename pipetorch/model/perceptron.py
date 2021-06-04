@@ -11,8 +11,8 @@ class SingleLayerPerceptron(nn.Module):
         self.a1 = last_activation
 
     def forward(self, x):
-        pred_y = self.a1(self.w1(x))
-        return pred_y.view(-1)
+        return self.a1(self.w1(x))
+        #return pred_y.view(-1)
     
 class SingleLayerPerceptron_BinaryClass(SingleLayerPerceptron):
     def __init__(self, input, output):
@@ -28,8 +28,8 @@ class SingleLayerPerceptron_MultiClass(SingleLayerPerceptron):
 def flatten_r_image(x):
         return  x[:,0,:,:].view(x.shape[0], -1)
 
-class MultiLayerPerceptron_MultiClass(nn.Module):
-    def __init__(self, *width, preprocess=identity, inner_activation=nn.ReLU(), drop_prob=None, last_activation=identity):
+class MultiLayerPerceptron(nn.Module):
+    def __init__(self, *width, preprocess=identity, inner_activation=nn.ReLU(), drop_prob=None, last_activation=None):
         super().__init__()
         self.actions = [preprocess]
         for n, (i, o) in enumerate(zip(width[:-1], width[1:])):
@@ -42,33 +42,33 @@ class MultiLayerPerceptron_MultiClass(nn.Module):
                     self.__setattr__(f'drop{n+1}', self.actions[-1])
                 self.actions.append(inner_activation)
                 self.__setattr__(f'activation{n+1}', self.actions[-1])
-            elif last_activation != identity:
+            elif last_activation is not None:
                 self.actions.append(last_activation)
                 self.__setattr__(f'activation{n+1}', self.actions[-1])
-        if width[-1] == 1:
-            self.reshape = (-1)
-        else:
-            self.reshape = (-1, width[-1])
+        #if width[-1] == 1:
+        #    self.reshape = (-1)
+        #else:
+        #    self.reshape = (-1, width[-1])
         
     def forward(self, x):
         for a in self.actions:
             x = a(x)
-        return x.view(self.reshape)
+        return x #.view(self.reshape)
 
-    def post_forward(self, y):
-        return torch.argmax(y, axis=1)
-
-class MultiLayerPerceptron_BinaryClass(MultiLayerPerceptron_MultiClass):
+class MultiLayerPerceptron_BinaryClass(MultiLayerPerceptron):
     def __init__(self, *width, preprocess=identity, inner_activation=nn.ReLU(), drop_prob=None):
         super().__init__(*width, preprocess=preprocess, inner_activation=inner_activation, drop_prob=drop_prob, last_activation=nn.nn.Sigmoid())
 
     def post_forward(self, y):
         return (y > 0.5).float()
 
-class MultiLayerPerceptron(MultiLayerPerceptron_MultiClass):
+class MultiLayerPerceptron_MultiClass(MultiLayerPerceptron):
     def __init__(self, *width, preprocess=identity, inner_activation=nn.ReLU(), drop_prob=None):
-        super().__init__(*width, preprocess=preprocess, inner_activation=inner_activation, drop_prob=drop_prob, last_activation=identity)
-
+        super().__init__(*width, preprocess=preprocess, inner_activation=inner_activation, drop_prob=drop_prob)
+        
+    def post_forward(self, y):
+        return torch.argmax(y, axis=1)
+        
 class TwoLayerPerceptron(nn.Module):
     def __init__(self, input, hidden, output, last_activation=None):
         super().__init__()
@@ -81,7 +81,7 @@ class TwoLayerPerceptron(nn.Module):
     def forward(self, x):
         x = self.a1(self.w1(x))
         pred_y = self.a2(self.w2(x))
-        return pred_y.view(-1)
+        return pred_y #.view(-1)
 
     def post_forward(self, y):
         return y 

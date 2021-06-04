@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from ..evaluate.evaluate import Evaluator
 
 class Databunch:
-    def __init__(self, df, train_ds, valid_ds, test_ds=None, batch_size=32, valid_batch_size=None, num_workers=0, shuffle=True, pin_memory=False, scaler=None, balance=False, collate=None):
+    def __init__(self, df, train_ds, valid_ds, test_ds=None, batch_size=32, valid_batch_size=None, num_workers=0, shuffle=True, pin_memory=False, balance=False, collate=None):
         self.df = df
         self.train_ds = train_ds
         self.valid_ds = valid_ds
@@ -15,7 +15,6 @@ class Databunch:
         self.num_workers = num_workers
         self.shuffle = shuffle
         self.pin_memory = pin_memory
-        self.scaler = scaler
         self.balance = balance
         self.collate = collate
         
@@ -145,7 +144,7 @@ class Databunch:
             self.reset()
     
     def inverse_transform_y(self, y):
-        return self.scaler.inverse_transform_y(y)
+        return self.df.inverse_transform_y(y)
     
     def inverse_transform(self, X, y, y_pred, cum=None):
         return self.df.inverse_transform(X, y, y_pred, cum=cum)

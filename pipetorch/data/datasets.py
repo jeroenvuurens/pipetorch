@@ -13,93 +13,6 @@ import requests
 from io import BytesIO
 from zipfile import ZipFile
 from functools import partial
-from google_images_download import google_images_download
-from tqdm.notebook import tqdm
-import ipywidgets as widgets
-import io
-from PIL import Image, ImageStat
-
-def _gis_args(keywords, output_directory=None, 
-                 image_directory=None, limit=200, format='jpg', color_type='full-color', 
-                 size='medium', type='photo', delay=0, **kwargs):
-    if output_directory is None:
-        output_directory = str(create_path(f'/tmp/{getuser()}/images'))
-    if image_directory is None:
-        image_directory = '_'.join(keywords.split())
-    arguments = {"keywords":keywords, 
-                 "limit":limit, "format":format, "color_type":color_type, "size":size, "type":type, 
-                 "delay":delay, "image_directory":image_directory, 
-                 "output_directory":output_directory, "chromedriver":"/usr/bin/chromedriver" }
-    arguments.update(kwargs)
-    return arguments
-
-def crawl_images(keywords, output_directory=None, 
-                 image_directory=None, limit=200, format='jpg', color_type='full-color', 
-                 size='medium', type='photo', delay=0, **kwargs):
-    """
-    Downloads images through Google Image Search, 
-    see https://google-images-download.readthedocs.io/en/latest/arguments.html 
-    for info on the arguments. When no output_directory is given, the downloaded images
-    are stored in /tmp/<username>/images/<query>.
-    """
-    kwargs = _gis_args(keywords, output_directory=output_directory, image_directory=image_directory, 
-             limit=limit, format=format, color_type=color_type, size=size, type=type, delay=delay, 
-             **kwargs)
-    response = google_images_download.googleimagesdownload()   #class instantiation
-    paths = response.download(kwargs)   #passing the arguments to the function
-    
-def filter_images(keywords, folder=None, columns=4, height=200, width=200):
-    """
-    Removes duplicate images and shows the remaining images so that the user can manually select
-    images to remove from the folder by pressing the DELETE button below.
-    """
-    def on_click(button):
-        for r in rows:
-            if type(r) is widgets.HBox:
-                for c in r.children:
-                    checkbox = c.children[1]
-                    if checkbox.value:
-                        print(checkbox.description_tooltip)
-                        os.remove(checkbox.description_tooltip)
-
-    if folder is None:
-        folder = Path(f'/tmp/{getuser()}/images')
-    keywords = '_'.join(keywords.split())
-    imagefiles = [f for f in folder.glob(keywords + '/*')]
-    rows = []
-    cols = []
-    bymean = {}
-    for i, imgfile in enumerate(tqdm(imagefiles)):
-        row = i // columns
-        col = i % columns
-        img = Image.open(imgfile)
-        m = hash(tuple(ImageStat.Stat(img).mean))
-        buff = io.BytesIO()   
-        img.save(buff, format='JPEG')
-        if m in bymean:
-            os.remove(imgfile)
-        else:
-            bymean[m] = imgfile
-
-        image = widgets.Image( value=buff.getvalue(), width=width, height=height )
-        button = widgets.Checkbox( description='Delete', description_tooltip = str(imgfile) )
-        box = widgets.VBox([image, button])
-        cols.append(box)
-        if len(cols) == columns:
-            rows.append(widgets.HBox(cols))
-            cols = []
-                 
-    if len(cols) > 0:
-        rows.append(widgets.HBox(cols))
-    button = widgets.Button( description='Delete' )
-    button.on_click(on_click)
-    rows.append(button)
-    return widgets.VBox(rows)        
-
-def create_path(p, mode=0o777):
-    path = Path(p)
-    os.makedirs(path, mode, exist_ok=True)
-    return path
 
 def path_user():
     return Path.home() / '.pipetorchuser'
@@ -140,7 +53,7 @@ def read_pd_csv(path, filename=None, alternativesource=None, sep=None, delimiter
     if sep:
         kwargs['sep'] = sep
     elif delimiter:
-        kwargs['delimiter'] = delimiter
+        kwargs['sep'] = delimiter
     if filename is None:
         filename = get_filename(path)
     if (path_user() / filename).is_file():
@@ -155,7 +68,10 @@ def read_pd_csv(path, filename=None, alternativesource=None, sep=None, delimiter
         print('Downloading new file ' + path)
         df = pd.read_csv(path, **kwargs)
     (path_user()).mkdir(exist_ok=True)
-    df.to_csv(path_user() / filename, index=False)
+    if 'sep' in kwargs:
+        df.to_csv(path_user() / filename, index=False, sep=kwargs['sep'])
+    else:
+        df.to_csv(path_user() / filename, index=False)
     return df
 
 def read_csv(path, filename=None, alternativesource=None, sep=None, delimiter=None, **kwargs):

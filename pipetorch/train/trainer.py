@@ -2,20 +2,17 @@ import torch
 from torch.autograd import Variable
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import *
+from torch.optim import AdamW
 import timeit
 import sys
 import copy
+import inspect
 import numpy as np
 import math
-#from tqdm import tqdm_notebook as tqdm
 from tqdm.notebook import tqdm
-from pipetorch import Evaluator
-from .train_diagnostics import *
-from .jcollections import *
-from .transfer import *
-from .helper import *
-from .optimizers import *
+from ..evaluate.evaluate import Evaluator
+from torch.optim.lr_scheduler import OneCycleLR, LambdaLR
+from .tuner import *
 from functools import partial
 import os
 try:
@@ -23,7 +20,7 @@ try:
     GPU = 0
 except:
     GPU = -1
-
+    
 def last_container(last):
     try:
         l = last_container(last.children())
@@ -56,22 +53,14 @@ class DLModel(nn.Module):
     def last_container(self):
         return last_container(self)
 
-
-#def last_container(last):
-#    children = list(last.children())
-#    l = []
-#    while len(children) > 0:
-#        l.append(children[-1])
-#        last = children[-1]
-#        children = list(last.children())
-#
-#    return l[-1]
-
-def uniformlr():
+def UniformLR(*args, **kwargs):
     class Uniform_Scheduler:
         def step(self):
             pass
     return Uniform_Scheduler()
+
+def onecycle(optimizer, lr, steps):
+    return OneCycleLR(optimizer, lr[1], total_steps=steps)
 
 class ordered_dl:
     def __init__(self, dl):
@@ -88,19 +77,8 @@ class ordered_dl:
         if exc_type is not None:
             return False
 
-class Eval(object):
-    def __init__(self, trainer):
-        self.trainer = trainer
-    def __enter__(self):
-        self.model.eval()
-        self.model.set_grad_enabled(False)
-        return self.trainer.model
-    def __exit__(self, type, value, traceback):
-        self.model.set_grad_enabled(True)
-        self.trainer.model.train()
-
 class trainer:
-    def __init__(self, model, loss, *data, report_frequency=1, report_phases=['train','valid'], metrics = [], optimizer=Adam, optimizerparams=dict(), out_features=None, random_state=None, cycle_epochs=1.0, scheduler='onecycle', weight_decay=None, momentum=None, device=None, gpu=None, evaluator=None, **kwargs):
+    def __init__(self, model, loss, *data, report_frequency=1, report_phases=['train','valid'], metrics = [], optimizer=AdamW, optimizerparams=dict(), out_features=None, random_state=None, cycle_epochs=1.0, scheduler=None, weight_decay=None, momentum=None, device=None, gpu=None, evaluator=None, **kwargs):
         self.report_frequency = report_frequency
         self.report_phases = report_phases
         self.loss = loss
@@ -121,7 +99,7 @@ class trainer:
             self._out_features = out_features
         self._optimizerclass = optimizer
         self._optimizerparams = optimizerparams
-        self.schedulertype = scheduler
+        self.scheduler = scheduler
         if self.random_state is not None:
             torch.backends.cudnn.deterministic=True
             torch.manual_seed(self.random_state)
@@ -215,17 +193,63 @@ class trainer:
         except: pass
 
     @property
+    def lr(self):
+        """
+        return: the learning rate that was set, could be an interval
+        """
+        return self._lr
+        
+    @lr.setter
+    def lr(self, lr):
+        """
+        Sets the learning rate that is used for training. You can either use a single value
+        for a fixed lr, a tuple with an interval of two values for a linear annealing 
+        scheduler, or a tuple with an interval of two values for a OneCyleLR scheduler.
+        The allocation of a scheduler can be overruled by setting a scheduler manually.
+        
+        If the lr did not change, nothing happens, otherwise a new optimizer is created
+        when needed.
+        """
+        if type(lr) is tuple:
+            lr = tuple(sorted(lr))
+        elif type(lr) is list:
+            lr = sorted(lr)
+        try:
+            if self.lr == lr:
+                return
+        except: pass
+        try:
+            del self._optimizer
+        except: pass
+        self._lr = lr
+
+    def set_lr(self, lr):
+        """
+        sets the learning rate without changing the learning rate settings
+        the scheduler or optimizer. is used by tuners like find_lr.
+        """
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+
+
+    @property
     def min_lr(self):
+        """
+        the learning rate or lowest of an interval of learning rates
+        """
         try:
             return self.lr[0]
         except:
             try:
                 return self.lr
             except:
-                return 1e-3
+                return 1e-2
 
     @property
     def max_lr(self):
+        """
+        the learning rate or highest of an interval of learning rates
+        """
         try:
             return self.lr[1]
         except: pass
@@ -282,48 +306,60 @@ class trainer:
     def del_optimizer(self):
         try:
             del self._optimizer
-            del self._schduler
+        except: pass
+        try:
+            del self._scheduler
         except: pass
 
     @property
     def scheduler(self):
+        """
+        Returns: scheduler that is used to adapt the learning rate
+
+        You can either provide a (partial) function that accepts (optimizer, lr, epochs, batch_steps)
+        that returns a new scheduler. If you have not specified a function, one of three standard
+        schedulers is used based on the value of the learning rate. If the learning rate is a
+        single value, the learning rate is fixed. If the learning rate is an interval of two values
+        in a list, a linear annealing scheduler is used. If the learning rate is an interval 
+        of two values in a tuple, a OneCyleLR scheduler is used.
+        """
         try:
             return self._scheduler
         except:
-            if type(self.lr) is list:
-                steps = int(round((len(self.train_dl) * self.cycle_epochs)))
-                if self.schedulertype == 'cyclic':
-                    from .optimizers import cyclicallr
-                    self._scheduler = cyclicallr(self.optimizer, self.min_lr, self.max_lr, steps)
-                elif self.schedulertype == 'onecycle':
-                    from .optimizers import onecyclelr
-                    self._scheduler = onecyclelr(self.optimizer, self.min_lr, self.max_lr, steps)
+            try:
+                #steps = int(round((len(self.train_dl) * self.cycle_epochs)))
+                if self.schedulertype is None:
+                    try:
+                        self.lr[1]
+                        if type(self.lr) == tuple:
+                            schedulertype = OneCycleLR
+                        elif type(self.lr) == list:
+                            schedulertype = LambdaLR
+                        else:
+                            raise NotImplementedError(f'Provide either an single value learning rate for a Uniform scheduler, list [low, high] for a Linear Annealing, or tuple (low, high) for a OneCycleLR scheduler')
+                    except:
+                        schedulertype = UniformLR
                 else:
-                    self._scheduler = uniformlr()
-            else:
-                self._scheduler = uniformlr()
+                    schedulertype = self.schedulertype
+                if schedulertype == LambdaLR:
+                    if self.cycle_epochs < 2:
+                        lr = lambda epoch: self.lr[1]
+                    else:
+                        lr = lambda epoch: self.lr[1] - (self.lr[1] - self.lr[0]) * epoch / (self.cycle_epochs - 1)
+                    self._scheduler = LambdaLR(self.optimizer, lr_lambda = lr)
+                elif schedulertype == OneCycleLR:
+                    self._scheduler = OneCycleLR(self.optimizer, self.lr[1], epochs=int(self.cycle_epochs), steps_per_epoch=len(self.train_dl))
+                else:
+                    self._scheduler = schedulertype(self.optimizer, self.lr, self.cycle_epochs, len(self.train_dl))
+            except:
+                raise NotImplementedError(f'The provided function does not work with (optim, {self.lr}, {self.cycle_epochs}, {len(self.train_dl)}) to instantiate a scheduler')
             return self._scheduler
-
     @scheduler.setter
     def scheduler(self, value):
+        try:
+            del self._scheduler
+        except: pass
         self.schedulertype = value
-        try:
-            del self._scheduler
-        except: pass
-
-    def change_lr(self, lr):
-        try:
-            if self.lr == lr:
-                return
-        except: pass
-        self.lr = lr
-        try:
-            del self._scheduler
-        except: pass
-
-    def set_lr(self, lr):
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
 
     @property
     def out_features(self):
@@ -561,25 +597,21 @@ class trainer:
         self._start_time = timeit.default_timer()
         return timeit.default_timer() - t
     
-    def train(self, epochs, lr=None, report_frequency=None, save=None, optimizer=None, weight_decay=None, momentum=None, save_lowest=None, save_highest=None, log={}):
-        if save:
-            self.save = save
+    def train(self, epochs, lr=None, report_frequency=None, save=None, optimizer=None, scheduler=False, weight_decay=None, momentum=None, save_lowest=None, save_highest=None, log={}):
+        self.del_optimizer()
+        self.lr = lr or self.lr
         if weight_decay is not None and self.weight_decay != weight_decay:
             self.weight_decay = weight_decay
-            self.del_optimizer()
         if momentum is not None and self.momentum != momentum:
             self.momentum = momentum
-            self.del_optimizer()
         if optimizer and self._optimizerclass != optimizer:
-            self.del_optimizer()
-            self._optimizerclass=optimizer
-        if report_frequency is None:
-            report_frequency = self.report_frequency
-        if lr:
-            self.change_lr(lr)
+            self.optimizer = optimizer
+        if scheduler is not False:
+            self.scheduler = scheduler
+        self.report_frequency = report_frequency or self.report_frequency
         model = self.model
         torch.set_grad_enabled(False)
-        reports = math.ceil(epochs / report_frequency)
+        reports = math.ceil(epochs / self.report_frequency)
         maxepoch = self.epochid + epochs
         batches = len(self.train_dl) * self.train_dl.batch_size * epochs + len(self.valid_dl) * self.valid_dl.batch_size * reports
         pbar = tqdm(range(batches), desc='Total', leave=False)
@@ -590,12 +622,11 @@ class trainer:
             n = 0
             epoch_y_pred = []
             epoch_y = []
-
             try:
                 del self._scheduler
             except: pass
             self.scheduler
-            report = (((i + 1) % report_frequency) == 0 or i == epochs - 1)
+            report = (((i + 1) % self.report_frequency) == 0 or i == epochs - 1)
             with self.train_mode:
                 for *X, y in self.train_Xy:
                     loss, y_pred = self.train_batch(*X, y=y)
@@ -654,8 +685,8 @@ class trainer:
             for p in c.parameters():
                 p.requires_grad=False
 
-    def unfreeze(self, last=-1):
-        for c in list(self.model.children())[:-1]:
+    def unfreeze(self):
+        for c in list(self.model.children()):
             for p in c.parameters():
                 p.requires_grad=True
 
@@ -674,5 +705,3 @@ class trainer:
     def lr_find(self, lr=[1e-6, 10], steps=40, smooth=0.05, cache_valid=True, **kwargs):
         with tuner(self, exprange(lr[0], lr[1], steps), self.set_lr, label='lr', yscale='log', smooth=smooth, cache_valid=cache_valid, **kwargs) as t:
             t.run()
-
-        

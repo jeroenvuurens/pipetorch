@@ -40,7 +40,10 @@ class show_warning:
 class PT:
     _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_dtype', '_pt_category', '_pt_category_sort', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', '_pt_valid_dataframe', '_pt_test_dataframe']
 
-    _internal_names = pd.DataFrame._internal_names + ['_pt__scale_columns', '_pt__train', '_pt__valid', '_pt__test', '_pt__full', '_pt__scalerx', '_pt__scalery', '_pt__train_indices', '_pt__train_x', '_pt__train_y', '_pt__valid_x', '_pt__valid_y', '_pt__categoryx', '_pt__categoryy', '_pt__indices', '_pt_train__indices', '_pt__valid_indices', '_pt__test_indices']
+    _partial_internal_names = ['_pt__scale_columns', '_pt__train', '_pt__valid', '_pt__test', '_pt__full', '_pt__scalerx', '_pt__scalery', '_pt__train_x', '_pt__train_y', '_pt__valid_x', '_pt__valid_y', '_pt__categoryx', '_pt__categoryy']
+    
+    _full_internal_names = _partial_internal_names + ['_pt__len', '_pt__indices', '_pt__train_indices', '_pt__valid_indices', '_pt__test_indices']
+    _internal_names = pd.DataFrame._internal_names +  _full_internal_names
     _internal_names_set = set(_internal_names)
 
     @classmethod
@@ -58,7 +61,6 @@ class PT:
         return df
     
     def __init__(self, data, **kwargs):
-        #super().__init__(data, **kwargs)
         if type(data) != self._constructor:
             for m in self._metadata:
                 self.__setattr__(m, None)
@@ -66,9 +68,78 @@ class PT:
                     self.__setattr__(m, getattr(data, m))
                 except: pass
 
-#     def groupby(self, by, axis=0, level=None, as_index=True, sort=True, group_keys=True, observed=False, dropna=True):
-#         r = super().groupby(by, axis=axis, level=level, as_index=as_index, sort=sort, group_keys=group_keys, observed=observed, dropna=dropna)
-#         return PTGroupedDataFrame(r)
+    def _copy_meta(self, r):
+        r._pt_scale_columns = self._pt_scale_columns
+        r._pt_scale_omit_interval = self._pt_scale_omit_interval
+        r._pt_scalertype = self._pt_scalertype
+        r._pt_category = self._pt_category
+        r._pt_category_sort = self._pt_category_sort
+        r._pt_columny = self._pt_columny
+        r._pt_columnx = self._pt_columnx
+        r._pt_transposey = self._pt_transposey
+        r._pt_polynomials = self._pt_polynomials
+        r._pt_split = self._pt_split
+        r._pt_random_state = self._pt_random_state
+        r._pt_shuffle = self._pt_shuffle
+        r._pt_balance = self._pt_balance
+        r._pt_bias = self._pt_bias
+        r._dtype = self._dtype
+        r._pt_sequence_window = self._pt_sequence_window
+        r._pt_sequence_shift_y = self._pt_sequence_shift_y
+        r._pt_balance = self._pt_balance
+        return r
+
+    def _pt_reset(self):
+        for a in PT._full_internal_names:
+            try:
+                delattr(self, a)
+            except: pass
+    
+    def _pt_partial_reset(self):
+        for a in PT._partial_internal_names:
+            try:
+                delattr(self, a)
+            except: pass
+    
+    @property
+    def _pt_cache(self):
+        try:
+            return self._pt__cache
+        except:
+            self._pt__cache = 0
+            return self._pt__cache
+        
+    @_pt_cache.setter
+    def _pt_cache(self, value):
+        self._pt__cache = value
+
+    @property
+    def _cache(parent):
+        class Cache(object):
+            def __enter__(self):
+                if parent._pt_cache == 0:
+                    parent._pt_partial_reset()
+                parent._pt_cache += 1
+
+            def __exit__(self, type, value, traceback):
+                parent._pt_cache -= 1
+                if parent._pt_cache < 1:
+                    parent._pt_partial_reset()
+        return Cache()
+                    
+    def _check_len(self):
+        """
+        Internal method, to check if then length changed, to keep the split between the train/valid/test
+        unless the length changed to obtain stable results
+        """
+        try:
+            if self._pt__len == len(self):
+                return self._pt__len
+        except:
+            self._pt_reset()
+            self._pt__len = len(self)
+            return self._pt__len
+        
 
     @property
     def _columny(self):
@@ -100,13 +171,15 @@ class PT:
         columnx = self._columnx
         cat = set(self._pt_category) if type(self._pt_category) == tuple else []
         if self._pt_scale_columns == True or self._pt_scale_columns == 'x_only':
-            r = [ c for c in columnx if c not in cat ]
+            r = [ c for c in columnx if c not in cat]
         elif self._pt_scale_columns == False or self._pt_scale_columns is None or len(self._pt_scale_columns) == 0:
             r = []
         else:
             r = [ c for c in columnx if c in self._pt_scale_columns and c not in cat ]
-        return [ columnx.index(c) for c in r ]
-
+        X = self.train._x_polynomials
+        r = [ columnx.index(c) for i, c in enumerate(columnx) if c in r and ((X[:,i].min() < self._pt_scale_omit_interval[0] or X[:,i].max() > self._pt_scale_omit_interval[1])) ]
+        return r
+        
     @property
     def _columnsy_scale_indices(self):
         columny = self._columny
@@ -121,48 +194,52 @@ class PT:
         return [ columny.index(c) for c in r ]
 
     def _scalerx(self):
-        try:
-            if self._pt__scalerx is not None:
-                return self._pt__scalerx
-        except: pass
-        X = self.train._x_polynomials
-        self._pt__scalerx = [ None ] * X.shape[1]
-        for i in self._columnsx_scale_indices:
-            self._pt__scalerx[i] = self._create_scaler(self._pt_scalertype, X[:, i:i+1])
-        return self._pt__scalerx
+        with self._cache:
+            try:
+                if self._pt__scalerx is not None:
+                    return self._pt__scalerx
+            except: pass
+            X = self.train._x_polynomials
+            self._pt__scalerx = [ None ] * X.shape[1]
+            for i in self._columnsx_scale_indices:
+                self._pt__scalerx[i] = self._create_scaler(self._pt_scalertype, X[:, i:i+1])
+            return self._pt__scalerx
         
     def _scalery(self):
-        try:
-            if self._pt__scalery is not None:
-                return self._pt__scalery
-        except: pass
-        y = self.train._y_numpy
-        self._pt__scalery = [ None ] * y.shape[1]
-        for i in self._columnsy_scale_indices:
-            self._pt__scalery[i] = self._create_scaler(self._pt_scalertype, y[:, i:i+1])
-        return self._pt__scalery
+        with self._cache:
+            try:
+                if self._pt__scalery is not None:
+                    return self._pt__scalery
+            except: pass
+            y = self.train._y_numpy
+            self._pt__scalery = [ None ] * y.shape[1]
+            for i in self._columnsy_scale_indices:
+                self._pt__scalery[i] = self._create_scaler(self._pt_scalertype, y[:, i:i+1])
+            return self._pt__scalery
     
     @property
     def _categoryx(self):
-        try:
-            if self._pt_category is None or len(self._pt_category) == 0:
-                return None
-            if self._pt__categoryx is not None:
-                return self._pt__categoryx
-        except: pass
-        self._pt__categoryx = [ self._create_category(c) for c in self._columnx ]
-        return self._pt__categoryx            
+        with self._cache:
+            try:
+                if self._pt_category is None or len(self._pt_category) == 0:
+                    return None
+                if self._pt__categoryx is not None:
+                    return self._pt__categoryx
+            except: pass
+            self._pt__categoryx = [ self._create_category(c) for c in self._columnx ]
+            return self._pt__categoryx            
     
     @property
     def _categoryy(self):
-        try:
-            if self._pt_category is None or len(self._pt_category) == 0:
-                return None
-            if self._pt__categoryy is not None:
-                return self._pt__categoryy
-        except: pass
-        self._pt__categoryy = [ self._create_category(c) for c in self._columny ]
-        return self._pt__categoryy
+        with self._cache:
+            try:
+                if self._pt_category is None or len(self._pt_category) == 0:
+                    return None
+                if self._pt__categoryy is not None:
+                    return self._pt__categoryy
+            except: pass
+            self._pt__categoryy = [ self._create_category(c) for c in self._columny ]
+            return self._pt__categoryy
 
     def columny(self, columns=None, transpose=None):
         """
@@ -266,6 +343,7 @@ class PT:
 
     @property
     def _indices(self):
+        self._check_len()  # check if len changed
         try:
             if self._pt__indices is not None:
                 return self._pt__indices
@@ -275,9 +353,6 @@ class PT:
             if self._pt_random_state is not None:
                 np.random.seed(self._pt_random_state)
             np.random.shuffle(self._pt__indices)
-            if self._pt_random_state is not None:
-                t = 1000 * time.time() # current time in milliseconds
-                np.random.seed(int(t) % 2**32)
         return self._pt__indices
         
     @property
@@ -303,6 +378,7 @@ class PT:
 
     @property
     def _train_indices(self):
+        self._check_len()
         try:
             return self._pt__train_indices
         except:
@@ -336,16 +412,21 @@ class PT:
         input data matrix X contains all columns but the last, and the target y contains the last column
         columns: list of columns to convert, the last column is always the target. default=None means all columns.
         """
-        import torch
-        from torch.utils.data import TensorDataset, DataLoader
-        return [ self.train.to_dataset(), self.valid.to_dataset(), self.test.to_dataset() ]
+        with self._cache:
+            import torch
+            from torch.utils.data import TensorDataset, DataLoader
+            r = copy.copy(self)
+            if r._pt_transposey is None:
+                r._pt_transposey = False
+            return [ r.train.to_dataset(), r.valid.to_dataset(), r.test.to_dataset() ]
     
     def to_databunch(self, batch_size=32, num_workers=0, shuffle=True, pin_memory=False, balance=False):
         """
         returns: a Databunch that contains dataloaders for the train, valid and test part.
         batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor
         """
-        return Databunch(self, *self.to_dataset(), batch_size=batch_size, num_workers=num_workers, shuffle=shuffle, pin_memory=pin_memory, scaler=self, balance=balance)    
+        with self._cache:
+            return Databunch(self, *self.to_dataset(), batch_size=batch_size, num_workers=num_workers, shuffle=shuffle, pin_memory=pin_memory, balance=balance)    
 
     def evaluate(self, *metrics):
         #assert len(metrics) > 0, 'You need to provide at least one metric for the evaluation'
@@ -355,30 +436,10 @@ class PT:
         return self._copy_meta( PTDataFrame(data) )
 
     def _ptdataset(self, data, indices=None):
-        if indices is None:
-            indices = list(range(len(data)))
-        return PTDataSet.from_ptdataframe(data, self, indices)
-
-    def _copy_meta(self, r):
-        r._pt_scale_columns = self._pt_scale_columns
-        r._pt_scale_omit_interval = self._pt_scale_omit_interval
-        r._pt_scalertype = self._pt_scalertype
-        r._pt_category = self._pt_category
-        r._pt_category_sort = self._pt_category_sort
-        r._pt_columny = self._pt_columny
-        r._pt_columnx = self._pt_columnx
-        r._pt_transposey = self._pt_transposey
-        r._pt_polynomials = self._pt_polynomials
-        r._pt_split = self._pt_split
-        r._pt_random_state = self._pt_random_state
-        r._pt_shuffle = self._pt_shuffle
-        r._pt_balance = self._pt_balance
-        r._pt_bias = self._pt_bias
-        r._dtype = self._dtype
-        r._pt_sequence_window = self._pt_sequence_window
-        r._pt_sequence_shift_y = self._pt_sequence_shift_y
-        r._pt_balance = self._pt_balance
-        return r
+        with self._cache:
+            if indices is None:
+                indices = list(range(len(data)))
+            return PTDataSet.from_ptdataframe(data, self, indices)
     
     def split(self, split=0.2, shuffle=True, random_state=None):
         assert self._pt_valid_dataframe is None, 'You cannot combine split() with a fixed validation set'
@@ -432,73 +493,83 @@ class PT:
     
     @property
     def full(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__full
+            except:
+                self._pt__full = self._ptdataset_indices(np.concatenate([self._train_indices, self._valid_indices]))
             return self._pt__full
-        except:
-            self._pt__full = self._ptdataset_indices(np.concatenate([self._train_indices, self._valid_indices]))
-        return self._pt__full
 
     @property
     def train(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__train
+            except:
+                self._pt__train = self._ptdataset_indices(self._train_indices)
             return self._pt__train
-        except:
-            self._pt__train = self._ptdataset_indices(self._train_indices)
-        return self._pt__train
     
     @property
     def valid(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__valid
+            except:
+                try:
+                    len(self._pt_valid_dataframe)
+                    self._pt__valid = self._ptdataset(self._pt_valid_dataframe, range(len(self._pt_valid_dataframe)))
+                except:
+                    self._pt__valid = self._ptdataset_indices(self._valid_indices)
             return self._pt__valid
-        except:
-            if self._pt_valid_dataframe is None:
-                self._pt__valid = self._ptdataset_indices(self._valid_indices)
-            else:
-                self._pt__valid = self._ptdataset(self._pt_valid_dataframe, range(len(self._pt_valid_dataframe)))
-        return self._pt__valid
 
     @property
     def test(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__test
+            except:
+                try:
+                    len(self._pt_test_dataframe)
+                    self._pt__test = self._ptdataset(self._pt_test_dataframe, range(len(self._pt_test_dataframe)))
+                except:
+                    self._pt__test = self._ptdataset_indices(self._test_indices)
             return self._pt__test
-        except:
-            if self._pt_test_dataframe is None:
-                self._pt__test = self._ptdataset_indices(self._test_indices)
-            else:
-                self._pt__test = self._ptdataset(self._pt_test_dataframe, range(len(self._pt_test_dataframe)))    
-        return self._pt__test
     
     @property
     def train_X(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__train_x
+            except:
+                self._pt__train_x = self.train.X
             return self._pt__train_x
-        except:
-            self._pt__train_x = self.train.X
-        return self._pt__train_x
             
     @property
     def train_y(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__train_y
+            except:
+                self._pt__train_y = self.train.y
             return self._pt__train_y
-        except:
-            self._pt__train_y = self.train.y
-        return self._pt__train_y
 
     @property
     def valid_X(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__valid_x
+            except:
+                self._pt__valid_x = self.valid.X
             return self._pt__valid_x
-        except:
-            self._pt__valid_x = self.valid.X
-        return self._pt__valid_x
        
     @property
     def valid_y(self):
-        try:
+        with self._cache:
+            try:
+                return self._pt__valid_y
+            except:
+                self._pt__valid_y = self.valid.y
             return self._pt__valid_y
-        except:
-            self._pt__valid_y = self.valid.y
-        return self._pt__valid_y
 
     @property
     def test_X(self):
@@ -580,7 +651,7 @@ class PT:
         y = self.inverse_transform_y(y)
         X = self.inverse_transform_X(X)
         if y_pred is not None:
-            y_pred = self.inverse_transform_y(y_pred).add_prefix('pred_')
+            y_pred = self.inverse_transform_y(y_pred).add_suffix('_pred')
             df = pd.concat([X, y, y_pred], axis=1)
         else:
             df = pd.concat([X, y], axis=1)
@@ -605,7 +676,7 @@ class PTDataFrame(pd.DataFrame, PT):
     def __init__(self, data, *args, **kwargs):
         super().__init__(data, *args, **kwargs)
         PT.__init__(self, data)
-    
+
     @property
     def _constructor(self):
         return PTDataFrame
@@ -673,6 +744,10 @@ class PTGroupedDataFrame(DataFrameGroupBy, PT):
 
     def get_group(self, name, obj=None):
         return self._ptdataframe( super().get_group(name, obj=obj) )
+        
+    def __iter__(self):
+        for group, subset in super().__iter__():
+            yield group, self._copy_meta(subset)
         
     def to_dataset(self):
         from torch.utils.data import ConcatDataset
