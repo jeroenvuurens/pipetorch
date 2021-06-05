@@ -18,7 +18,7 @@ def to_numpy(arr):
     return arr
 
 class PTDS:
-    _metadata = ['_df', '_dfindices', '_pt_scalerx', '_pt_scalery', '_pt_categoryx', '_pt_categoryy', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_dtype', '_pt_sequence_window', '_pt_sequence_shift_y']
+    _metadata = ['_df', '_dfindices', '_pt_categoryx', '_pt_categoryy', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_dtype', '_pt_sequence_window', '_pt_sequence_shift_y']
 
     _internal_names = pd.DataFrame._internal_names + ['_X__tensor', '_y__tensor', '_tensor__indices']
     _internal_names_set = set(_internal_names)
@@ -28,7 +28,7 @@ class PTDS:
         r = cls(self)
         for c in r._metadata:
             r.__setattr__(c, self._df.__getattr__(c))
-        for c in ['_pt__scale_columns', '_pt__scalerx', '_pt__scalery', '_pt__categoryx', '_pt__categoryy']:
+        for c in ['_pt__scale_columns', '_pt__categoryx', '_pt__categoryy']:
             try:
                 r.__setattr__(c, self._df.__getattr__(c))
             except: pass
@@ -51,8 +51,6 @@ class PTDS:
     def _copy_meta(self, r):
         r._df = self._df
         r._dfindices = self._dfindices
-        r._pt_scalerx = self._pt_scalerx
-        r._pt_scalery = self._pt_scalery
         r._pt_categoryx = self._pt_categoryx
         r._pt_categoryy = self._pt_categoryy
         r._pt_columny = self._pt_columny
@@ -70,11 +68,11 @@ class PTDS:
     
     @property
     def _scalerx(self):
-        return self._pt_scalerx
+        return self._df._scalerx
         
     @property
     def _scalery(self):
-        return self._pt_scalery
+        return self._df._scalery
 
     @property
     def _categoryx(self):
@@ -178,7 +176,7 @@ class PTDS:
     @property
     def _x_scaled(self):
         if len(self) > 0:
-            return self._transform(self._scalerx(), self._x_polynomials)
+            return self._transform(self._scalerx, self._x_polynomials)
         return self._x_polynomials
             
     @property
@@ -255,7 +253,7 @@ class PTDS:
     @property
     def _y_scaled(self):
         if len(self) > 0:
-            return self._transform(self._scalery(), self._y_numpy)
+            return self._transform(self._scalery, self._y_numpy)
         return self._y_numpy
             
     @property
@@ -286,13 +284,15 @@ class PTDS:
             indices = [ i + offset for i in self._tensor_indices ]
         else:
             indices = list(range(len(y_pred)))
+
         assert len(y_pred) == len(indices), f'The number of predictions ({len(y_pred)}) does not match the number of samples ({len(indices)})'
         r = copy.deepcopy(self)
         y_pred = self._df.inverse_transform_y(y_pred)
         if columns is None:
             columns = [ c + '_pred' for c in self._columny ]
         r[columns] = np.NaN
-        r.loc[r.index[indices], columns] = y_pred.values
+        columns = [r.columns.get_loc(c) for c in columns]
+        r.iloc[indices, columns] = y_pred.values
         return r
     
     def line(self, x=None, y=None, xlabel = None, ylabel = None, title = None, **kwargs ):
@@ -330,8 +330,6 @@ class PTDataSet(pd.DataFrame, PTDS):
         r = cls(data)
         r._df = df
         r._dfindices = dfindices
-        r._pt_scalerx = df._scalerx
-        r._pt_scalery = df._scalery
         r._pt_categoryx = df._categoryx
         r._pt_categoryy = df._categoryy
         r._pt_columny = df._columny

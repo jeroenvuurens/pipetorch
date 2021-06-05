@@ -179,6 +179,9 @@ def nyse50(**kwargs):
     return PTDataFrame(df)
     
 def occupancy():
+    """
+    Loads the occupancy dataset. Note that this loader does not respect the original train/valid/test split.
+    """
     def read(i):
         url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/00357/occupancy_data.zip'
         content = requests.get(url)
@@ -188,8 +191,8 @@ def occupancy():
             return pd.read_csv(g)
     train = read_pd_csv('occupancy_train.csv', alternativesource=partial(read, 2))
     valid = read_pd_csv('occupancy_valid.csv', alternativesource=partial(read, 0))
-    test = read_pd_csv('occupancy_test.csv', alternativesource=partial(read, 1))
-    return PTDataFrame.from_dfs(train, valid=valid, test=test)
+    #test = read_pd_csv('occupancy_test.csv', alternativesource=partial(read, 1))
+    return PTDataFrame.from_dfs(train, valid)
 
 def ag_news(valid_perc=0.05, language='basic_english', min_freq=1, collate='pad', shuffle=True):
     train_iter, test_iter = read_torchtext(AG_NEWS)
