@@ -473,6 +473,18 @@ class trainer:
             X = [ x.to(self.model.device) for x in X ]
             return self.post_forward(self.model(*X))
 
+    def predict_numpy(self, *X):
+        """
+        This will only work when instantiated with a PipeTorch Databunch.
+        
+        """
+        self.data
+        
+        with self.eval_mode:
+            X = [ x.to(self.model.device) for x in X ]
+            return self.post_forward(self.model(*X))
+
+
     def post_forward(self, y):
         return y
 
@@ -613,6 +625,7 @@ class trainer:
         torch.set_grad_enabled(False)
         reports = math.ceil(epochs / self.report_frequency)
         maxepoch = self.epochid + epochs
+        epochspaces = int(math.log(maxepoch)/math.log(10)) + 1
         batches = len(self.train_dl) * self.train_dl.batch_size * epochs + len(self.valid_dl) * self.valid_dl.batch_size * reports
         pbar = tqdm(range(batches), desc='Total', leave=False)
         self._time()
@@ -654,7 +667,7 @@ class trainer:
                     m = m.__name__
                     value = v[m]
                     metric += f'{m}={value:.5f} '
-                print(f'{self.epochid} {self._time():.2f}s trainloss={epochloss:.5f} validloss={validloss:.5f} {metric}')
+                print(f'{self.epochid:>{epochspaces}} {self._time():.2f}s trainloss={epochloss:.5f} validloss={validloss:.5f} {metric}')
                 if save is not None:
                     self.commit(f'{save}-{self.epochid}')
                 if save_lowest is not None:
@@ -672,13 +685,13 @@ class trainer:
     def highest(self):
         self.checkout('highest')
 
-    def learning_curve(self, y='loss', series='phase', select=None, xlabel = None, ylabel = None, title=None, **kwargs):
-        return self.evaluator.line_metric(x='epoch', series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, **kwargs)
+    def learning_curve(self, y='loss', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
+        return self.evaluator.line_metric(x='epoch', series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, label_prefix=label_prefix, **kwargs)
         
-    def validation_curve(self, y=None, x='epoch', series='phase', select=None, xlabel = None, ylabel = None, title=None, **kwargs):
+    def validation_curve(self, y=None, x='epoch', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
         if y is not None and type(y) != str:
             y = y.__name__
-        return self.evaluator.line_metric(x=x, series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, **kwargs)
+        return self.evaluator.line_metric(x=x, series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, label_prefix=label_prefix, **kwargs)
        
     def freeze(self, last=-1):
         for c in list(self.model.children())[:last]:
