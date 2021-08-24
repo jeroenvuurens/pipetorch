@@ -38,7 +38,7 @@ class show_warning:
         self.warning.__exit__(exc_type, exc_value, exc_traceback)
 
 class PT:
-    _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_dtype', '_pt_category', '_pt_category_sort', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', '_pt_len', '_pt_indices']
+    _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', '_pt_len', '_pt_indices']
 
     @classmethod
     def read_csv(cls, path, **kwargs):
@@ -103,7 +103,7 @@ class PT:
         return self._pt_transposey
         
     def astype(self, dtype, copy=True, errors='raise'):
-        self._dtype = dtype
+        self._pt_dtype = dtype
         return super().astype(dtype, copy=copy, errors=errors)
     
     @property
@@ -225,6 +225,11 @@ class PT:
             return np.where(self.notnull().all(1))[0]
 
     @property
+    def _shuffle(self):
+        return ((self._pt_shuffle is None and self._pt_split is not None) or self._pt_shuffle) and \
+               self._pt_sequence_window is None
+        
+    @property
     def _indices(self):
         self._check_len()  # check if len changed
         try:
@@ -232,7 +237,7 @@ class PT:
                 return self._pt_indices
         except: pass
         self._pt_indices = self._indices_unshuffled
-        if (self._pt_shuffle is None or self._pt_shuffle) and self._pt_sequence_window is None:
+        if self._shuffle:
             if self._pt_random_state is not None:
                 np.random.seed(self._pt_random_state)
             np.random.shuffle(self._pt_indices)

@@ -18,20 +18,22 @@ def to_numpy(arr):
     return arr
 
 class PTDS:
-    _metadata = ['_df', '_dfindices', '_pt_categoryx', '_pt_categoryy', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_dtype', '_pt_sequence_window', '_pt_sequence_shift_y']
-
-    _internal_names = pd.DataFrame._internal_names + ['_X__tensor', '_y__tensor', '_tensor__indices']
-    _internal_names_set = set(_internal_names)
+    _metadata = ['_df', '_dfindices', '_pt_categoryx', '_pt_categoryy', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_indices', '_pt_sequence_window', '_pt_sequence_shift_y']
     
     def to_ptdataframe(self):
         cls = self._df.__class__
         r = cls(self)
-        for c in r._metadata:
-            r.__setattr__(c, self._df.__getattr__(c))
-        for c in ['_pt__scale_columns', '_pt__categoryx', '_pt__categoryy']:
-            try:
-                r.__setattr__(c, self._df.__getattr__(c))
-            except: pass
+
+        r._pt__categoryx = self._pt_categoryx
+        r._pt__categoryy = self._pt_categoryy
+        r._pt_columnx = self._pt_columnx
+        r._pt_columny = self._pt_columny
+        r._pt_transposey = self._pt_transposey
+        r._pt_bias = self._pt_bias
+        r._pt_polynomials = self._pt_polynomials
+        r._pt_sequence_window = self._pt_sequence_window
+        r._pt_sequence_shift_y = self._pt_sequence_shift_y
+        
         r._pt__train = self
         r._pt__full = self
         r._pt__valid = None
@@ -44,8 +46,6 @@ class PTDS:
         r._pt_random_state = None
         r._pt_balance = None
         r._pt_shuffle = False
-        r._pt_valid_dataframe = self[:0]
-        r._pt_test_dataframe = self[:0]
         return r
 
     def _copy_meta(self, r):
@@ -58,13 +58,31 @@ class PTDS:
         r._pt_transposey = self._pt_transposey
         r._pt_polynomials = self._pt_polynomials
         r._pt_bias = self._pt_bias
-        r._dtype = self._dtype
+        r._pt_dtype = self._pt_dtype
         r._pt_sequence_window = self._pt_sequence_window
         r._pt_sequence_shift_y = self._pt_sequence_shift_y
         return r
     
     def _ptdataset(self, data):
         return self._copy_meta( PTDataSet(data) )
+    
+    def _not_nan(self, a):
+        a = np.isnan(a)
+        while len(a.shape) > 1:
+            a = np.any(a, -1)
+        return np.where(~a)[0]
+    
+    @property
+    def _dtype(self):
+        return self._pt_dtype
+    
+    @property
+    def indices(self):
+        try:
+            return self._pt_indices
+        except:
+            self._pt_indices = np.intersect1d(self._not_nan(self._x_sequence), self._not_nan(self._y_transposed))
+            return self._pt_indices
     
     @property
     def _scalerx(self):
@@ -92,7 +110,7 @@ class PTDS:
     @property
     def _sequence_window(self):
         try:
-            if self._pt_sequence_window is not None:
+            if self._is_sequence:
                 return self._pt_sequence_window
         except:pass
         return 1
@@ -152,7 +170,7 @@ class PTDS:
     
     @property
     def _x_category(self):
-        if self._pt_sequence_window is not None:
+        if self._is_sequence:
             self = self.iloc[:-self._shift_y]
         if self._categoryx is None:
             return self[self._columnx]
@@ -187,43 +205,38 @@ class PTDS:
         return a
     
     @property
+    def _x_sequence(self):
+        if not self._is_sequence:
+            return self._x_biased
+        X = self._x_biased
+        window = self._sequence_window
+        len_seq_mode = max(0, len(X) - window + 1)
+        return np.concatenate([np.expand_dims(X[ii:ii+window], axis=0) for ii in range(len_seq_mode)], axis=0)        
+    
+    @property
     def X(self):
-        return self._x_biased
+        return self._x_sequence[self.indices]
 
     @property
     def X_tensor(self):
-        try:
-            return self._X__tensor
-        except:
-            self._X__tensor, self._y__tensor, self._tensor__indices = self._tensors()
-            return self._X__tensor
+        import torch
+        if self._dtype is None:
+            return torch.tensor(self.X).type(torch.FloatTensor)
+        else:
+            return torch.tensor(self.X)
 
     @property
     def y_tensor(self):
-        try:
-            return self._y__tensor
-        except:
-            self._X__tensor, self._y__tensor, self._tensor__indices = self._tensors()
-            return self._y__tensor
+        import torch
+        if self._dtype is None:
+            return torch.tensor(self.y).type(torch.FloatTensor)
+        else:
+            return torch.tensor(self.y)
  
     @property
-    def _tensor_indices(self):
-        try:
-            return self._tensor__indices
-        except:
-            self._X__tensor, self._y__tensor, self._tensor__indices = self._tensors()
-            return self._tensor__indices
-
-    def _tensors(self):
-        X = self.X.astype(np.float32) if self._dtype is None else self.X
-        y = self.y.astype(np.float32) if self._dtype is None else self.y
-        if self._pt_sequence_window is None:
-            from .pttensor import tensors
-            return tensors(X, y)
-        else:
-            from .pttensor import sequence_tensors
-            return sequence_tensors(X, y, self._sequence_window)
-
+    def _is_sequence(self):
+        return self._pt_sequence_window is not None
+        
     @property
     def tensors(self):
         return self.X_tensor, self.y_tensor
@@ -236,7 +249,7 @@ class PTDS:
         
     @property
     def _y_category(self):
-        if self._pt_sequence_window is not None:
+        if self._is_sequence:
             self = self.iloc[self._range_y]
         if self._categoryy is None:
             return self[self._columny]
@@ -259,10 +272,10 @@ class PTDS:
     @property
     def _y_transposed(self):
         return self._y_scaled.squeeze() if self._transposey else self._y_scaled
-
+    
     @property
     def y(self):
-        return self._y_transposed
+        return self._y_transposed[self.indices]
     
     def to_dataset(self):
         """
@@ -279,11 +292,8 @@ class PTDS:
     
     def add_column(self, y_pred, columns=None):
         y_pred = to_numpy(y_pred)
-        if self._tensor_indices is not None:
-            offset = self._range_y.start
-            indices = [ i + offset for i in self._tensor_indices ]
-        else:
-            indices = list(range(len(y_pred)))
+        offset = self._range_y.start
+        indices = [ i + offset for i in self.indices ]
 
         assert len(y_pred) == len(indices), f'The number of predictions ({len(y_pred)}) does not match the number of samples ({len(indices)})'
         r = copy.deepcopy(self)
@@ -318,8 +328,8 @@ class PTDS:
 
 class PTDataSet(pd.DataFrame, PTDS):
     _metadata = PTDS._metadata
-    _internal_names = PTDS._internal_names
-    _internal_names_set = PTDS._internal_names_set
+    #_internal_names = PTDS._internal_names
+    #_internal_names_set = PTDS._internal_names_set
     
     @property
     def _constructor(self):
@@ -337,7 +347,7 @@ class PTDataSet(pd.DataFrame, PTDS):
         r._pt_transposey = df._transposey
         r._pt_polynomials = df._pt_polynomials
         r._pt_bias = df._pt_bias
-        r._dtype = df._dtype
+        r._pt_dtype = df._pt_dtype
         r._pt_sequence_window = df._pt_sequence_window
         r._pt_sequence_shift_y = df._pt_sequence_shift_y
         return r
@@ -348,8 +358,8 @@ class PTDataSet(pd.DataFrame, PTDS):
 
 class PTGroupedDataSetSeries(SeriesGroupBy, PTDS):
     _metadata = PTDS._metadata
-    _internal_names = PTDS._internal_names
-    _internal_names_set = PTDS._internal_names_set
+    #_internal_names = PTDS._internal_names
+    #_internal_names_set = PTDS._internal_names_set
 
     @property
     def _constructor(self):
@@ -361,8 +371,8 @@ class PTGroupedDataSetSeries(SeriesGroupBy, PTDS):
     
 class PTGroupedDataSet(DataFrameGroupBy, PTDS):
     _metadata = PTDS._metadata
-    _internal_names = PTDS._internal_names
-    _internal_names_set = PTDS._internal_names_set
+    #_internal_names = PTDS._internal_names
+    #_internal_names_set = PTDS._internal_names_set
 
     def __init__(self, data=None):
         super().__init__(obj=data.obj, keys=data.keys, axis=data.axis, level=data.level, grouper=data.grouper, exclusions=data.exclusions,
@@ -385,7 +395,6 @@ class PTGroupedDataSet(DataFrameGroupBy, PTDS):
         PTDataSet.astype(self, dtype, copy=copy, errors=errors)
 
     def get_group(self, name, obj=None):
-        print(f'get_group {name}')
         return self._ptdataset( super().get_group(name, obj=obj) )
         
     def to_dataset(self):

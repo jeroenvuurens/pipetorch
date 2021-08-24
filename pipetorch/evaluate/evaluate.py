@@ -134,116 +134,21 @@ class Evaluator:
     def _order(self, X):
         return X[:, 0].argsort(axis=0)
 
-    def _column_xy(self, x=None, y=None):
-        if x is None:
-            x = self.df._columnx[0]
-        if y is None:
-            y = self.df._columny[0]
-        return x, y
-            
-    def _column_x2y(self, x1=None, x2=None, y=None):
-        if x1 is None:
-            x1 = self.df._columnx[0]
-        if x2 is None:
-            x2 = self.df._columnx[1]
-        if y is None:
-            y = self.df._columny[0]
-        return x1, x2, y
-    
-    def _graph_coords_callable(self, df, y):
-        if callable(y):
-            return self.df.inverse_transform_y( y(df.X) ).to_numpy()
-        elif type(y) == str:
-            return np.squeeze(df[[y]].to_numpy())
-        return y
-    
-    def _graph_coords(self, df, *x):
-        return  [ self._graph_coords_callable(df, c) for c in x ]         
-
-    def _figure(self, x=None, y=None, xlabel = None, ylabel = None, title = None, sort=False, interpolate=0, phase='train', df=None ):
-        if df is None:
-            df = self.df.train
-        x, y = self._column_xy(x, y)
-        if not xlabel:
-            if type(x) == str:
-                xlabel=x
-            else:
-                xlabel=df._columnx[0]
-        if not ylabel:
-            if type(y) == str:
-                ylabel=y
-            else:
-                ylabel=df._columny[0]
-        if title is not None:
-            plt.title(title)
-        if type(ylabel) == str:
-            plt.ylabel(ylabel) 
-        if type(xlabel) == str:
-            plt.xlabel(xlabel)
-        if interpolate > 0:
-            assert (y is None) or (type(y)==str) or callable(y), 'You cannot interpolate with given results'
-            df = df.interpolate(interpolate)
-        elif sort:
-            if (y is None) or (type(y)==str) or callable(y):
-                df = df.sort_values(by=x)
-            else:
-                sortedindices = df[x].argsort()
-                df = df.iloc[sortedindices]
-                y = y[sortedindices]
-        graph_x, graph_y = self._graph_coords(df, x, y)
-        return df.X, graph_x, graph_y
-
-    def _figure2d(self, x1=None, x2=None, y=None, xlabel = None, ylabel = None, title = None, df=None ):
-        if df is None:
-            df = self.df.train
-        x1, x2, y = self._column_x2y(x1, x2, y)
-        if not xlabel:
-            if type(x1) == str:
-                xlabel=x1
-            else:
-                xlabel=self.df._columnx[0]
-        if not ylabel:
-            if type(x2) == str:
-                ylabel=x2
-            else:
-                ylabel=self.df._columnx[1]
-        if title is not None:
-            plt.title(title)
-        if type(ylabel) == str:
-            plt.ylabel(ylabel) 
-        if type(xlabel) == str:
-            plt.xlabel(xlabel)
-        graph_x1, graph_x2, graph_y = self._graph_coords(df, x1, x2, y)
-        return df.X, graph_x1, graph_x2, graph_y
-
-    def _add_noise(self, x1, x2, noise):
-        if noise > 0:
-            x1_sd = np.std(x1)
-            x2_sd = np.std(x2)
-            x1 = x1 + np.random.normal(0, noise * x1_sd, x1.shape)
-            x2 = x2 + np.random.normal(0, noise * x2_sd, x2.shape)
-        return x1, x2
-    
     def scatter2d_class(self, x1=None, x2=None, y=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, df=None, **kwargs):
-        X, xd1, xd2, y = self._figure2d(x1=x1, x2=x2, y=y, xlabel=xlabel, ylabel=ylabel, title=title, df=df)
-        for c in sorted(np.unique(y)):
-            indices = (c == y).flatten()
-            xx1 = xd1[indices].flatten()
-            xx2 = xd2[indices].flatten()
-            xx1, xx2 = self._add_noise(xx1, xx2, noise)
-            plt.scatter(xx1, xx2, label=int(c), **kwargs)
+        f = _figure2d(self, x1=x1, x2=x2, y=y, xlabel=xlabel, ylabel=ylabel, title=title, df=df, noise=noise)
+        for c in sorted(np.unique(f.graph_y)):
+            indices = (c == f.graph_y)
+            plt.scatter(f.graph_x1[indices], f.graph_x2[indices], label=int(c), **kwargs)
         plt.gca().legend(loc=loc)
 
-    def scatter2d_color(self, x1=None, x2=None, c=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, df=None, cmap=plt.get_cmap("jet"), s=1, **kwargs):
-        X, x1, x2, c = self._figure2d(x1=x1, x2=x2, y=c, xlabel=xlabel, ylabel=ylabel, title=title, df=df)
-        x1, x2 = self._add_noise(x1.flatten(), x2.flatten(), noise)
-        plt.scatter(x1, x2, c=c, cmap=cmap, s=s, **kwargs)
+    def scatter2d_color(self, x1=None, x2=None, c=None, xlabel=None, ylabel=None, title=None, noise=0, df=None, cmap=plt.get_cmap("jet"), s=1, **kwargs):
+        f = _figure2d(self, x1=x1, x2=x2, y=c, xlabel=xlabel, ylabel=ylabel, title=title, df=df, noise=noise)
+        plt.scatter(f.graph_x1, f.graph_x2, c=f.graph_y, cmap=cmap, s=s, **kwargs)
         plt.colorbar()
         
-    def scatter2d_size(self, x1=None, x2=None, s=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, df=None, **kwargs):
-        X, x1, x2, s = self._figure2d(x1=x1, x2=x2, y=s, xlabel=xlabel, ylabel=ylabel, title=title, df=df)
-        x1, x2 = self._add_noise(x1.flatten(), x2.flatten(), noise)
-        plt.scatter(x1, x2, s=s, **kwargs)
+    def scatter2d_size(self, x1=None, x2=None, s=None, xlabel=None, ylabel=None, title=None, noise=0, df=None, **kwargs):
+        f = _figure2d(self, x1=x1, x2=x2, y=s, xlabel=xlabel, ylabel=ylabel, title=title, df=df, noise=noise)
+        plt.scatter(f.graph_x1, f.graph_x2, s=f.graph_y, **kwargs)
         
     def _boundaries(self, predict):
         ax = plt.gca()
@@ -254,6 +159,7 @@ class Evaluator:
         xx, yy = np.meshgrid(np.arange(x_min, x_max, stepx),
                              np.arange(y_min, y_max, stepy))
         X = np.array(np.vstack([xx.ravel(), yy.ravel()])).T
+        print(X.shape, self.df._columnx)
         s = self.df.from_numpy(X)
         try:
             return ax, xx, yy, predict(s.X).reshape(xx.shape)       
@@ -348,36 +254,215 @@ class Evaluator:
         plt.xlabel(r'$\theta_0$')
         plt.ylabel(r'$\theta_1$')
         
-    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, **kwargs):
-        X, gx, gy = self._figure(x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
-        pltfunction(gx, gy, marker=marker, **kwargs)
+    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='upper right', **kwargs):
+        f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
+        pltfunction(f.graph_x, f.graph_y, marker=marker, **kwargs)
         if 'label' in kwargs:
-            plt.legend()
+            plt.legend(loc=loc)
     
-    def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
-        self._plot(plt.plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, sort=True, df=df, **kwargs)
+    def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='upper right', **kwargs):
+        self._plot(plt.plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, sort=True, df=df, loc=loc, **kwargs)
 
-    def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
-        self._plot(plt.scatter, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs)
+    def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='upper right', **kwargs):
+        self._plot(plt.scatter, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, loc=loc, **kwargs)
        
-    def _groups(self, series='phase', select=None):
+    def _select(self, select):
         if select is None:
             s = self.results
         elif type(select) is pd.core.series.Series:
             s = self.results[select]
         elif type(select) is EvaluatorResults:
             s = select
+        elif type(select) is str:
+            s = self.results[self.results.phase == select]
         else:
             raise ValueError('Unknown type passed for select')
-        for g, d in s.groupby(by=series):
+        return s
+
+    def _unique(self, selection, series='phase'):
+        return len(selection[series].unique())
+    
+    def _groups(self, selection, series='phase'):
+        for g, d in selection.groupby(by=series):
             yield g, self.results._copy_meta(d)
     
-    def scatter_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
-        for g, d in self._groups(series=series, select=select):
-            d.scatter(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=label_prefix + str(g), **kwargs)
-        plt.legend()
+    def scatter_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+        selection = self._select(select)
+        unique_groups = self._unique(selection, series)
+        for g, d in self._groups(selection, series=series):
+            g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
+            d.scatter(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=g, **kwargs)
     
-    def line_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
-        for g, d in self._groups(series=series, select=select):
-            d.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=label_prefix + str(g), **kwargs)
-        plt.legend()
+    def line_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+        selection = self._select(select)
+        unique_groups = self._unique(selection, series)
+        for g, d in self._groups(selection, series=series):
+            g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
+            d.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=g, **kwargs)
+        
+class _figures:
+    def _graph_coords_callable(self, df, f):
+        if callable(f):
+            return self.evalator.df.inverse_transform_y( f(df.X) ).to_numpy()
+        elif type(f) == str:
+            return np.squeeze(df[[f]].to_numpy())
+        return f
+    
+    def _graph_coords(self, df, *fields):
+        return  [ self._graph_coords_callable(df, f) for f in fields ]         
+        
+class _figure(_figures):
+    def __init__(self, evaluator, x=None, y=None, xlabel = None, ylabel = None, title = None, sort=False, interpolate=0, phase='train', df=None ):
+        self.evaluator = evaluator
+        self.df = df if df is not None else evaluator.df.train
+        self.x = x
+        self.y = y
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+        if title is not None:
+            plt.title(title)
+        plt.ylabel(self.ylabel) 
+        plt.xlabel(self.xlabel)
+        if interpolate > 0:
+            assert (y is None) or (type(y)==str) or callable(y), 'You cannot interpolate with given results'
+            self.df = self.df.interpolate(interpolate)
+        elif sort:
+            self.df = self.df.sort_values(by=x)
+
+    @property
+    def x(self):
+        return self._x
+    
+    @x.setter
+    def x(self, value):
+        self._x = value or self.df._columnx[0]
+        
+    @property
+    def y(self):
+        return self._y
+    
+    @y.setter
+    def y(self, value):
+        self._y = value or self.df._columny[0]
+        
+    @property
+    def xlabel(self):
+        return self._xlabel
+    
+    @xlabel.setter
+    def xlabel(self, value):
+        self._xlabel = value or self.x
+
+    @property
+    def ylabel(self):
+        return self._ylabel
+    
+    @ylabel.setter
+    def ylabel(self, value):
+        self._ylabel = value or self.y
+
+    @property
+    def graph_x(self):
+        return self._graph_coords_callable(self.df, self.x)
+
+    @property
+    def graph_y(self):
+        return self._graph_coords_callable(self.df, self.y)
+
+    @property
+    def X(self):
+        return self.df.X
+
+class _figure2d(_figures):
+    def __init__(self, evaluator, x1=None, x2=None, y=None, xlabel = None, ylabel = None, title = None, df=None, noise=0 ):
+        self.evaluator = evaluator
+        self.df = df if df is not None else evaluator.df.train
+        self.noise = noise
+        self.x1 = x1
+        self.x2 = x2
+        self.y = y
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+        if title is not None:
+            plt.title(title)
+        plt.ylabel(ylabel) 
+        plt.xlabel(xlabel)
+
+    @property
+    def x1(self):
+        return self._x1
+    
+    @x1.setter
+    def x1(self, value):
+        self._x1 = value or self.df._columnx[0]
+
+    @property
+    def x2(self):
+        return self._x2
+    
+    @x2.setter
+    def x2(self, value):
+        self._x2 = value or self.df._columnx[1]
+        
+    @property
+    def y(self):
+        return self._y
+    
+    @y.setter
+    def y(self, value):
+        self._y = value or self.df._columny[0]
+        
+    @property
+    def xlabel(self):
+        return self._xlabel
+    
+    @xlabel.setter
+    def xlabel(self, value):
+        self._xlabel = value or self.x1
+
+    @property
+    def ylabel(self):
+        return self._ylabel
+    
+    @ylabel.setter
+    def ylabel(self, value):
+        self._ylabel = value or self.x2
+
+    @property
+    def graph_x1_noiseless(self):
+        return self._graph_coords_callable(self.df, self.x1)
+
+    @property
+    def graph_x2_noiseless(self):
+        return self._graph_coords_callable(self.df, self.x2)
+
+    @property
+    def graph_y(self):
+        return self._graph_coords_callable(self.df, self.y)
+
+    @property
+    def graph_x1(self):
+        try:
+            return self._graph_x1
+        except:
+            self._graph_x1 = self.graph_x1_noiseless
+            if self.noise > 0:
+                # should we flatten??
+                sd = np.std(self._graph_x1)
+                self._graph_x1 = self._graph_x1 + np.random.normal(0, self.noise * sd, self._graph_x1.shape)
+            return self._graph_x1
+
+    @property
+    def graph_x2(self):
+        try:
+            return self._graph_x2
+        except:
+            self._graph_x2 = self.graph_x2_noiseless
+            if self.noise > 0:
+                sd = np.std(self._graph_x2)
+                self._graph_x2 = self._graph_x2 + np.random.normal(0, self.noise * sd, self._graph_x2.shape)
+            return self._graph_x2
+    
+    @property
+    def X(self):
+        return self.df.X

@@ -5,12 +5,13 @@ import itertools
 import matplotlib.pyplot as plt
 
 class EvaluatorResults(pd.DataFrame):
-    _metadata = ['_evaluator', '_phase']
+    _metadata = ['evaluator', '_phase', 'df']
     
     @classmethod
     def from_evaluator(cls, evaluator):
         r = cls()
-        r._evaluator = evaluator
+        r.evaluator = evaluator
+        r.df = evaluator.df
         return r
     
     @property
@@ -37,7 +38,7 @@ class EvaluatorResults(pd.DataFrame):
             if c not in self.columns:
                 self.insert(len(self.columns), c, np.NaN)
         r = self.append(row, sort=True, ignore_index=True)
-        r._evaluator = self._evaluator
+        r.evaluator = self.evaluator
         return r
 
     @property
@@ -69,45 +70,63 @@ class EvaluatorResults(pd.DataFrame):
             self.evaluator._plot(pltfunction, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, marker=next(marker), interpolate=interpolate, df=df, label=l, **kwargs)
         plt.legend()
 
-    def _figure(self, x, y=None, xlabel = None, ylabel = None, title = None, label=None):
-        if y is None:
-            y = self._evaluator.metrics[0].__name__
-        if not xlabel:
-            if type(x) == str:
-                xlabel=x
-            else:
-                xlabel=df._columnx[0]
-        if not ylabel:
-            if type(y) == str:
-                ylabel=y
-            else:
-                ylabel=df._columny[0]
-        if label is None:
-            try:
-                label = self._phase
-            except: None
-        if title is not None:
-            plt.title(title)
-        if type(ylabel) == str:
-            plt.ylabel(ylabel) 
-        if type(xlabel) == str:
-            plt.xlabel(xlabel)
-        sort = self.sort_values(by=x)
-        gx = [ row[x] for _, row in sort.iterrows() ]
-        gy = [ row[y] for _, row in sort.iterrows() ]
-        return gx, gy, label
+#     def _figure(self, x, y=None, xlabel = None, ylabel = None, title = None, label=None):
+#         if y is None:
+#             y = self._evaluator.metrics[0].__name__
+#         xlabel = xlabel or x
+#             if type(x) == str:
+#                 xlabel=x
+#             else:
+#                 xlabel=df._columnx[0]
+#         if not ylabel:
+#             if type(y) == str:
+#                 ylabel=y
+#             else:
+#                 ylabel=df._columny[0]
+#         if label is None:
+#             try:
+#                 label = self._phase
+#             except: None
+#         if title is not None:
+#             plt.title(title)
+#         if type(ylabel) == str:
+#             plt.ylabel(ylabel) 
+#         if type(xlabel) == str:
+#             plt.xlabel(xlabel)
+#         sort = self.sort_values(by=x)
+#         gx = [ row[x] for _, row in sort.iterrows() ]
+#         gy = [ row[y] for _, row in sort.iterrows() ]
+#         return gx, gy, label
         
-    def _plot(self, pltfunction, x, y=None, xlabel = None, ylabel = None, title=None, label=None, **kwargs):
-        gx, gy, label = self._figure(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=label)
+    def _select(self, select):
+        if select is None:
+            s = self.results
+        elif type(select) is pd.core.series.Series:
+            s = self.results[select]
+        elif type(select) is EvaluatorResults:
+            s = select
+        elif type(select) is str:
+            s = self.results[self.results.phase == select]
+        else:
+            raise ValueError('Unknown type passed for select')
+        return s
+
+    def _unique(self, selection, series='phase'):
+        return len(selection[series].unique())
+            
+    def _plot(self, pltfunction, x, y=None, xlabel = None, ylabel = None, title=None, label=None, loc='upper right', **kwargs):
+        f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title)
         if label is not None:
             kwargs['label'] = label
-        pltfunction(gx, gy, **kwargs)      
+        pltfunction(f.graph_x, f.graph_y, **kwargs)      
+        if 'label' in kwargs:
+            plt.legend(loc=loc)
 
-    def line_predict(self, label, x=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
-        self._plot_results(plt.plot, label, x=x, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs)
+#     def line_predict(self, label, x=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
+#         self._plot_results(plt.plot, label, x=x, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs)
     
-    def scatter_predict(self, label, x=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
-        self._plot_results(plt.scatter, label, x=x, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs) 
+#     def scatter_predict(self, label, x=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
+#         self._plot_results(plt.scatter, label, x=x, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs) 
         
     def line(self, x, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
         self._plot(plt.plot, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
@@ -121,3 +140,58 @@ class EvaluatorResults(pd.DataFrame):
     def scatter_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
         self._evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
 
+class _figure:
+    def __init__(self, results, x=None, y=None, xlabel = None, ylabel = None, title = None ):
+        self.evaluator = results.evaluator
+        self.results = results
+        self.x = x
+        self.y = y
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+        if title is not None:
+            plt.title(title)
+        plt.ylabel(self.ylabel) 
+        plt.xlabel(self.xlabel)
+        self.results = self.results.sort_values(by=self.x)
+        gx = [ row[x] for _, row in self.results.iterrows() ]
+        gy = [ row[y] for _, row in self.results.iterrows() ]
+
+    @property
+    def x(self):
+        return self._x
+    
+    @x.setter
+    def x(self, value):
+        self._x = value or self.df._columnx[0]
+        
+    @property
+    def y(self):
+        return self._y
+    
+    @y.setter
+    def y(self, value):
+        self._y = value or self.evaluator.metrics[0].__name__
+        
+    @property
+    def xlabel(self):
+        return self._xlabel
+    
+    @xlabel.setter
+    def xlabel(self, value):
+        self._xlabel = value or self.x
+
+    @property
+    def ylabel(self):
+        return self._ylabel
+    
+    @ylabel.setter
+    def ylabel(self, value):
+        self._ylabel = value or self.y
+
+    @property
+    def graph_x(self):
+        return [ row[self.x] for _, row in self.results.iterrows() ]
+
+    @property
+    def graph_y(self):
+        return [ row[self.y] for _, row in self.results.iterrows() ]

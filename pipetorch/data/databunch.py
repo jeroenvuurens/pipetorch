@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from ..evaluate.evaluate import Evaluator
 
 class Databunch:
-    def __init__(self, df, train_ds, valid_ds, test_ds=None, batch_size=32, valid_batch_size=None, num_workers=0, shuffle=True, pin_memory=False, balance=False, collate=None):
+    def __init__(self, df, train_ds, valid_ds=None, test_ds=None, batch_size=32, valid_batch_size=None, num_workers=0, shuffle=True, pin_memory=False, balance=False, collate=None):
         self.df = df
         self.train_ds = train_ds
         self.valid_ds = valid_ds
@@ -162,7 +162,7 @@ class Databunch:
         for *X, y in dl:
             if device is not None:
                 X = [ x.to(device) for x in X ]
-            y_pred = model.forward(*X)
+            y_pred = model(*X)
             df = self.inverse_transform(*X, y, y_pred, df)
         torch.set_grad_enabled(prev)
         return df
@@ -207,4 +207,4 @@ class Databunch:
         return self.test_ds.tensors[1]
     
     def to_evaluator(self, *metrics):
-        return Evaluator(self, *metrics)
+        return Evaluator(self.df, *metrics)
