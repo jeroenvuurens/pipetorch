@@ -184,7 +184,12 @@ class Evaluator:
             assert (y is None) or (type(y)==str) or callable(y), 'You cannot interpolate with given results'
             df = df.interpolate(interpolate)
         elif sort:
-            df = df.sort_values(by=x)
+            if (y is None) or (type(y)==str) or callable(y):
+                df = df.sort_values(by=x)
+            else:
+                sortedindices = df[x].argsort()
+                df = df.iloc[sortedindices]
+                y = y[sortedindices]
         graph_x, graph_y = self._graph_coords(df, x, y)
         return df.X, graph_x, graph_y
 
@@ -354,12 +359,6 @@ class Evaluator:
 
     def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
         self._plot(plt.scatter, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, **kwargs)
-        
-  #  def line_metric(self, x, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
-  #      
-  #      self.results.train.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
-  #      self.results.valid.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
-  #      plt.legend()
        
     def _groups(self, series='phase', select=None):
         if select is None:
