@@ -26,7 +26,13 @@ class Evaluator:
         if y is None:
             return y
         try:
-            y = y.cpu().numpy()
+            y = y.cpu()
+        except: pass
+        try:
+            y = y.numpy()
+        except: pass
+        try:
+            y = y.to_numpy()
         except: pass
         return y.reshape(-1) if len(y.shape) > 1 else y
     
@@ -79,7 +85,9 @@ class Evaluator:
     
     def compute_metrics(self, true_y, pred_y):
         pred_y = self._1d(pred_y)
-        return {m.__name__: m(true_y, pred_y) for m in self.metrics}
+        if len(self.metrics) > 0:
+            return {m.__name__: m(true_y, pred_y) for m in self.metrics}
+        return dict()
 
     def _dict_to_df(self, *dicts):
         return pd.concat([pd.DataFrame(d, index=[0]) for d in dicts], axis=1)
@@ -88,9 +96,6 @@ class Evaluator:
         if df is None:
             df = self.df
         train(df.train_X, df.train_y)
-        annot['_model'] = model
-        annot['_predict'] = None if model is None else predict
-        annot['_train'] = None if model is None else train
         self.score_train(predict, df=df, **annot)
         self.score_valid(predict, df=df, **annot)
 
@@ -113,24 +118,24 @@ class Evaluator:
         y_pred = self._inverse_transform_y( df, y_pred )
         metrics = self.compute_metrics(y, y_pred)
         self.results = self.results._add(self._dict_to_df(metrics, annot))
-
+            
     def score_train(self, predict, df=None, **annot):
         if df is None:
             df = self.df
         self._run(predict, df.train_X, df.train_y, phase='train', df=df, **annot)
-
+            
     def score_valid(self, predict, df=None, **annot):
         if df is None:
             df = self.df
         if len(df.valid_X) > 0:
             self._run(predict, df.valid_X, df.valid_y, phase='valid', df=df, **annot)
-        
+
     def score_test(self, predict, df=None, **annot):
         if df is None:
             df = self.df
         if len(df.test_X) > 0:
             self._run(predict, df.test_X, df.test_y, phase='test', df=df, **annot)
-            
+                
     def _order(self, X):
         return X[:, 0].argsort(axis=0)
 
@@ -159,7 +164,6 @@ class Evaluator:
         xx, yy = np.meshgrid(np.arange(x_min, x_max, stepx),
                              np.arange(y_min, y_max, stepy))
         X = np.array(np.vstack([xx.ravel(), yy.ravel()])).T
-        print(X.shape, self.df._columnx)
         s = self.df.from_numpy(X)
         try:
             return ax, xx, yy, predict(s.X).reshape(xx.shape)       
@@ -211,15 +215,8 @@ class Evaluator:
             while (loss1 - l) < (loss0 - l) / 2:
                 max1 *= 2
                 loss1 = self._loss_coef_intercept(model, loss, min0, max1)
-        if max0 > min0:
-            min0 = min0 - (max0 - min0)
-        else:
-            min0, max0 = max0, min0 + (min0 - max0)
-
-        if max1 > min1:
-            min1 = min1 - (max1 - min1)
-        else:
-            min1, max1 = max1, min1 + (min1 - max1)
+        min0 = min0 - (max0 - min0)
+        min1 = min1 - (max1 - min1)
         return min0, max0, min1, max1
 
     def _loss_coef_intercept(self, model, loss, intercept, coef):
@@ -241,7 +238,7 @@ class Evaluator:
     def loss_surface(self, model, loss, linewidth=1, antialiased=False, cmap=cm.coolwarm, intersects=50, **kwargs):
         model = copy.copy(model)
         min0, max0, min1, max1 = self._loss_minmax(model, loss)
-        step0 = np.abs(max0 - min1) / intersects
+        step0 = np.abs(max0 - min0) / intersects
         step1 = np.abs(max1 - min1) / intersects
         xx, yy = np.meshgrid(np.arange(min0, max0, step0),
                              np.arange(min1, max1, step1))
@@ -254,6 +251,9 @@ class Evaluator:
         plt.xlabel(r'$\theta_0$')
         plt.ylabel(r'$\theta_1$')
         
+    def _figure(self, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, interpolate=0, df=None):
+        return _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
+    
     def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='upper right', **kwargs):
         f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
         pltfunction(f.graph_x, f.graph_y, marker=marker, **kwargs)
@@ -279,9 +279,6 @@ class Evaluator:
             raise ValueError('Unknown type passed for select')
         return s
 
-    def _unique(self, selection, series='phase'):
-        return len(selection[series].unique())
-    
     def _groups(self, selection, series='phase'):
         for g, d in selection.groupby(by=series):
             yield g, self.results._copy_meta(d)
@@ -295,7 +292,7 @@ class Evaluator:
     
     def line_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
         selection = self._select(select)
-        unique_groups = self._unique(selection, series)
+        unique_groups = len([ a for a in self._groups(selection, series=series) ])
         for g, d in self._groups(selection, series=series):
             g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
             d.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=g, **kwargs)
@@ -303,7 +300,7 @@ class Evaluator:
 class _figures:
     def _graph_coords_callable(self, df, f):
         if callable(f):
-            return self.evalator.df.inverse_transform_y( f(df.X) ).to_numpy()
+            return self.evaluator.df.inverse_transform_y( f(df.X) ).to_numpy()
         elif type(f) == str:
             return np.squeeze(df[[f]].to_numpy())
         return f
@@ -314,20 +311,21 @@ class _figures:
 class _figure(_figures):
     def __init__(self, evaluator, x=None, y=None, xlabel = None, ylabel = None, title = None, sort=False, interpolate=0, phase='train', df=None ):
         self.evaluator = evaluator
-        self.df = df if df is not None else evaluator.df.train
+        self.df = copy.copy(df if df is not None else evaluator.df.train)
         self.x = x
+        self.xlabel = xlabel or self.x
+        if interpolate > 0:
+            assert (y is None) or (type(y)==str) or callable(y), 'You cannot interpolate with given results'
+            self.df = self.df.interpolate_factor(interpolate)
+        elif sort:
+            self.df = self.df.sort_values(by=self.x)
         self.y = y
-        self.xlabel = xlabel
-        self.ylabel = ylabel
+        self.ylabel = ylabel or self.y
         if title is not None:
             plt.title(title)
         plt.ylabel(self.ylabel) 
         plt.xlabel(self.xlabel)
-        if interpolate > 0:
-            assert (y is None) or (type(y)==str) or callable(y), 'You cannot interpolate with given results'
-            self.df = self.df.interpolate(interpolate)
-        elif sort:
-            self.df = self.df.sort_values(by=x)
+
 
     @property
     def x(self):
@@ -335,23 +333,38 @@ class _figure(_figures):
     
     @x.setter
     def x(self, value):
-        self._x = value or self.df._columnx[0]
-        
+        if value is None:
+            self._x = self.df._columnx[0]
+        elif value is int:
+            self._x = self.df._columnx[value]
+        elif type(value) == str:
+            self._x = value
+        else:
+            self._x = self.df._columnx[0]
+
     @property
     def y(self):
         return self._y
     
     @y.setter
     def y(self, value):
-        self._y = value or self.df._columny[0]
-        
+        if value is None:
+            self._y = self.df._columny[0]
+        elif str(value) is int:
+            self._y = self.df._columny[value]
+        elif type(value) == str:
+            self._y = value
+        else:
+            self._y = self.df._columny[0]
+            self.df = self.df.replace_y(value)
+
     @property
     def xlabel(self):
         return self._xlabel
     
     @xlabel.setter
     def xlabel(self, value):
-        self._xlabel = value or self.x
+        self._xlabel = value
 
     @property
     def ylabel(self):
@@ -359,7 +372,7 @@ class _figure(_figures):
     
     @ylabel.setter
     def ylabel(self, value):
-        self._ylabel = value or self.y
+        self._ylabel = value
 
     @property
     def graph_x(self):
@@ -376,7 +389,7 @@ class _figure(_figures):
 class _figure2d(_figures):
     def __init__(self, evaluator, x1=None, x2=None, y=None, xlabel = None, ylabel = None, title = None, df=None, noise=0 ):
         self.evaluator = evaluator
-        self.df = df if df is not None else evaluator.df.train
+        self.df = copy.copy(df if df is not None else evaluator.df.train)
         self.noise = noise
         self.x1 = x1
         self.x2 = x2
@@ -385,8 +398,8 @@ class _figure2d(_figures):
         self.ylabel = ylabel
         if title is not None:
             plt.title(title)
-        plt.ylabel(ylabel) 
-        plt.xlabel(xlabel)
+        plt.ylabel(self.ylabel) 
+        plt.xlabel(self.xlabel)
 
     @property
     def x1(self):
@@ -394,7 +407,18 @@ class _figure2d(_figures):
     
     @x1.setter
     def x1(self, value):
-        self._x1 = value or self.df._columnx[0]
+        if value is None:
+            self._x1 = self.df[self.df._columnx[0]]
+            self._xlabel = self.df._columnx[0]
+        elif value is int:
+            self._x1 = self.df[self.df._columnx[value]]
+            self._xlabel = self.df._columnx[value]
+        elif type(value) == str:
+            self._x1 = self.df[value]
+            self._xlabel = value
+        else:
+            self._x1 = value
+            self._xlabel = self.df._columnx[0]
 
     @property
     def x2(self):
@@ -402,7 +426,18 @@ class _figure2d(_figures):
     
     @x2.setter
     def x2(self, value):
-        self._x2 = value or self.df._columnx[1]
+        if value is None:
+            self._x2 = self.df[self.df._columnx[1]]
+            self._ylabel = self.df._columnx[1]
+        elif value is int:
+            self._x2 = self.df[self.df._columnx[value]]
+            self._ylabel = self.df._columnx[value]
+        elif type(value) == str:
+            self._x2 = self.df[value]
+            self._ylabel = value
+        else:
+            self._x2 = value
+            self._ylabel = self.df._columnx[1]
         
     @property
     def y(self):
@@ -410,7 +445,15 @@ class _figure2d(_figures):
     
     @y.setter
     def y(self, value):
-        self._y = value or self.df._columny[0]
+        if value is None:
+            self._y = self.df._columny[0]
+        elif str(value) is int:
+            self._y = self.df._columny[value]
+        elif type(value) == str:
+            self._y = value
+        else:
+            self._y = self.df._columny[0]
+            self.df = self.df.replace_y(value)
         
     @property
     def xlabel(self):
@@ -418,7 +461,8 @@ class _figure2d(_figures):
     
     @xlabel.setter
     def xlabel(self, value):
-        self._xlabel = value or self.x1
+        if value is not None:
+            self._xlabel = value
 
     @property
     def ylabel(self):
@@ -426,7 +470,8 @@ class _figure2d(_figures):
     
     @ylabel.setter
     def ylabel(self, value):
-        self._ylabel = value or self.x2
+        if value is not None:
+            self._ylabel = value
 
     @property
     def graph_x1_noiseless(self):

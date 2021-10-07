@@ -38,7 +38,7 @@ class show_warning:
         self.warning.__exit__(exc_type, exc_value, exc_traceback)
 
 class PT:
-    _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', '_pt_len', '_pt_indices']
+    _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', '_pt_len', '_pt_indices', '_pt_train_valid_indices', '_pt_test_indices']
 
     @classmethod
     def read_csv(cls, path, **kwargs):
@@ -48,6 +48,13 @@ class PT:
     @classmethod
     def from_dfs(cls, *dfs, **kwargs):
         return cls(pd.concat(dfs), **kwargs)
+    
+    @classmethod
+    def from_train_test(cls, train, test, **kwargs):
+        r = cls(pd.concat([train, test], ignore_index=True))
+        r._pt_train_valid_indices = list(range(len(train)))
+        r._pt_test_indices = list(range(len(train), len(train)+len(test)))
+        return r
     
     def __init__(self, data, **kwargs):
         for m in self._metadata:
@@ -75,21 +82,6 @@ class PT:
             indices = list(range(len(data)))
         return PTDataSet.from_ptdataframe(data, self, indices)
     
-    def _check_len(self):
-        """
-        Internal method, to check if then length changed, to keep the split between the train/valid/test
-        unless the length changed to obtain stable results
-        """
-        try:
-            if self._pt_len == len(self):
-                return self._pt_len
-        except:
-            try:
-                del self._pt_indices
-            except: pass
-            self._pt_len = len(self)
-            return self._pt_len
-
     @property
     def _columny(self):
         try:
@@ -105,16 +97,20 @@ class PT:
     def astype(self, dtype, copy=True, errors='raise'):
         self._pt_dtype = dtype
         return super().astype(dtype, copy=copy, errors=errors)
-    
+        
     @property
     def _columnx(self):
         if self._pt_columnx is None:
             return [ c for c in self.columns if c not in self._columny ]
-        return self._pt_columnx
+        return [ c for c in self._pt_columnx if c not in self._columny ]
    
     @property
+    def _all_columns(self):
+        return list(set(self._columnx).union(set(self._columny)))
+
+    @property
     def _columnsx_scale_indices(self):
-        if self._pt_polynomials is not None:
+        if self._pt_polynomials is not None and self._pt_scale_columns is not None:
             X = self.train._x_polynomials
             return [ i for i in range(X.shape[1]) if (X[:,i].min() < self._pt_scale_omit_interval[0] or X[:,i].max() > self._pt_scale_omit_interval[1]) ]
         columnx = self._columnx
@@ -219,24 +215,42 @@ class PT:
     @property
     def _indices_unshuffled(self):
         if self._pt_sequence_window is not None:
-            indices = list(range(len(self) - (self._pt_sequence_window + self._pt_sequence_shift_y - 1)))
+            try:
+                self._pt_train_valid_indices = [ i for i in self._pt_train_valid_indices if i in self.index ]
+                indices = self._pt_train_valid_indices[:-(self._pt_sequence_window + self._pt_sequence_shift_y - 1)]
+            except:
+                indices = list(range(len(self) - (self._pt_sequence_window + self._pt_sequence_shift_y - 1)))
             return indices
         else:
-            return np.where(self.notnull().all(1))[0]
+            try:
+                return [ i for i in self._pt_train_valid_indices if i in self.index ]
+            except:
+                return np.where(self[self._all_columns].notnull().all(1))[0]
 
     @property
     def _shuffle(self):
         return ((self._pt_shuffle is None and self._pt_split is not None) or self._pt_shuffle) and \
                self._pt_sequence_window is None
         
+    def _check_len(self):
+        """
+        Internal method, to check if then length changed, to keep the split between the train/valid/test
+        unless the length changed to obtain stable results
+        """
+        try:
+            if self._pt_len == len(self._pt_indices):
+                return True
+        except: pass
+        return False
+
     @property
     def _indices(self):
-        self._check_len()  # check if len changed
         try:
-            if self._pt_indices is not None:
+            if self._check_len():
                 return self._pt_indices
         except: pass
         self._pt_indices = self._indices_unshuffled
+        self._pt_len = len(self._pt_indices)
         if self._shuffle:
             if self._pt_random_state is not None:
                 np.random.seed(self._pt_random_state)
@@ -264,6 +278,13 @@ class PT:
     def _train_indices_unbalanced(self):
         return self._indices[:self._valid_begin]
 
+    def _pseudo_choose(self, indices, items):
+        r = indices[:items % len(indices)]
+        while items >= len(indices):
+            r = np.hstack([r, indices])
+            items -= len(indices)
+        return r
+    
     @property
     def _train_indices(self):
         indices = self._train_indices_unbalanced
@@ -274,11 +295,12 @@ class PT:
             classlengths = {c:len(indices) for c, indices in classindices.items()}
             if self._pt_balance == True: # equal classes
                 n = max(classlengths.values())
-                mask = np.hstack([np.random.choice(classindices[c], n-classlengths[c], replace=True) for c in classes])
+                mask = np.hstack([self._pseudo_choose(classindices[c], n) for c in classes])
             else:                        # use given weights
+                weights = self._pt_balance
                 n = max([ int(math.ceil(classlengths[c] / w)) for c, w in weights.items() ])
-                mask = np.hstack([np.random.choice(classindices[c], n*weights[c]-classlengths[c], replace=True) for c in classes])
-            indices = np.array(indices)[ np.hstack([mask, list(range(len(y)))]) ]
+                mask = np.hstack([self._pseudo_choose(classindices[c], n*weights[c]) for c in classes])
+            indices = np.array(indices)[ mask ]
         return indices
 
     @property
@@ -287,6 +309,10 @@ class PT:
 
     @property
     def _test_indices(self):
+        try:
+            if self._pt_test_indices is not None:
+                return self._pt_test_indices
+        except: pass
         return self._indices[self._test_begin:]
 
     def to_dataset(self, *dfs):
@@ -363,7 +389,11 @@ class PT:
 
     @property
     def test(self):
-        return self._ptdataset_indices(self._test_indices)
+        if self._pt_sequence_window is None:
+            return PTDataSet.df_to_testset(self.iloc[self._test_indices], self, self._test_indices)
+        else:
+            low, high = min(self._test_indices), max(self._test_indices) + self._sequence_window + self._shift_y - 1
+            return PTDataSet.df_to_testset(self.iloc[low:high], self, list(range(low, high)))
     
     @property
     def train_X(self):
@@ -479,6 +509,9 @@ class PTSet:
         r._pt_scale_omit_interval = omit_interval
         return r
     
+    def scalex(self, scalertype=StandardScaler, omit_interval=(-2,2)):
+        return self.scale(columns='x_only')
+    
     def add_bias(self):
         r = copy.copy(self)
         r._pt_bias = True
@@ -495,6 +528,11 @@ class PTSet:
         assert type(self._pt_scale_columns) != list or len(self._pt_scale_columns) == 0, 'You cannot combine polynomials with column specific scaling'
         r = copy.copy(self)
         r._pt_polynomials = PolynomialFeatures(degree, include_bias=include_bias)
+        return r
+    
+    def no_columny(self):
+        r = copy.deepcopy(self)
+        self._pt_columny = [self._pt_columnx[0]]
         return r
     
     def columny(self, columns=None, transpose=None):
@@ -520,9 +558,19 @@ class PTSet:
             r._pt_transposey = transpose
         return r
 
-    def columnx(self, *columns):
+    def columnx(self, *columns, omit=False):
+        """
+        Specify which columns to use as input. The target variable is always excluded
+        so if you want to add that (for sequence learning), you should copy the
+        target column. 
+        omit: when True, all columns are used except the specified columns
+        return: a new PipeTorch DataFrame with the given input specified.
+        """
         r = copy.deepcopy(self)
-        r._pt_columnx = list(columns) if len(columns) > 0 else None
+        if omit:
+            r._pt_columnx = [ c for c in self.columns if c not in columns ]
+        else:
+            r._pt_columnx = list(columns) if len(columns) > 0 else None
         return r
     
     def category(self, *columns, sort=False):
@@ -553,7 +601,7 @@ class PTDataFrame(pd.DataFrame, PT, PTSet):
     def __init__(self, data, *args, **kwargs):
         super().__init__(data, *args, **kwargs)
         PT.__init__(self, data)
-
+        
     @property
     def _constructor(self):
         return PTDataFrame
@@ -742,3 +790,4 @@ class PTGroupedDataFrame(DataFrameGroupBy, PT):
             dss.append( self._ptdataframe(group).to_dataset())
 
         return [ConcatDataset(ds) for ds in zip(*dss)]
+

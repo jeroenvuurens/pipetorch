@@ -77,6 +77,9 @@ def read_pd_csv(path, filename=None, alternativesource=None, sep=None, delimiter
 def read_csv(path, filename=None, alternativesource=None, sep=None, delimiter=None, **kwargs):
     return PTDataFrame(read_pd_csv(path, filename=filename, alternativesource=alternativesource, sep=sep, delimiter=delimiter, **kwargs))
 
+def read_csv_file(filename, **kwargs):
+    return PTDataFrame(pd.read_csv(filename, **kwargs))
+
 def read_torchtext(torchtext_function):
     try:
         return torchtext_function(root=path_shared() / torchtext_function.__name__)
@@ -133,7 +136,7 @@ def bank_marketing():
     return read_csv("https://github.com/llhthinker/MachineLearningLab/raw/master/UCI%20Bank%20Marketing%20Data%20Set/data/bank-additional/bank-additional-full.csv", filename='bank_marketing.csv', sep=';')
 
 def auto_mpg():
-    return read_csv('https://raw.githubusercontent.com/joanby/python-ml-course/master/datasets/auto/auto-mpg.csv')
+    return read_csv('https://raw.githubusercontent.com/joanby/python-ml-course/master/datasets/auto/auto-mpg.csv', na_values='?')
 
 def big_mart_sales():
     return read_csv('https://raw.githubusercontent.com/akki8087/Big-Mart-Sales/master/Train.csv', filename='big_mart_sales.csv')
@@ -177,6 +180,22 @@ def flights():
 def nyse50(**kwargs):
     df = pd.read_csv('/data/datasets/nyse-top50.csv', **kwargs)
     return PTDataFrame(df)
+    
+def housing_prices_kaggle_train(**kwargs):
+    return read_csv_file('/data/datasets/housing_prices_advanced/train.csv', **kwargs)
+    
+def housing_prices_kaggle_test(**kwargs):
+    return read_csv_file('/data/datasets/housing_prices_advanced/test.csv', **kwargs)
+
+def housing_prices_kaggle(**kwargs):
+    train = read_csv_file('/data/datasets/housing_prices_advanced/train.csv', **kwargs)
+    test = read_csv_file('/data/datasets/housing_prices_advanced/test.csv', **kwargs)
+    return PTDataFrame.from_train_test(train, test)
+
+def heart_disease_kaggle(**kwargs):
+    train = read_csv_file('/data/datasets/mlms1/train.csv', **kwargs)
+    test = read_csv_file('/data/datasets/mlms1/test_set.csv', **kwargs)
+    return PTDataFrame.from_train_test(train, test)
     
 def occupancy():
     """
