@@ -5,8 +5,6 @@ from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 import matplotlib.pyplot as plt
 from sklearn.utils import resample
 import copy
-import path
-from pathlib import Path
 import os
 
 def to_numpy(arr):
@@ -88,7 +86,8 @@ class PTDS:
             if self._pt_is_test:
                 self._pt__indices = self._not_nan(self._x_sequence)
             else:
-                self._pt__indices = np.intersect1d(self._not_nan(self._x_sequence), self._not_nan(self._y_transposed))
+                s = set(self._not_nan(self._y_transposed))
+                self._pt__indices = [ i for i in self._not_nan(self._x_sequence) if i in s]
             return self._pt__indices
     
     @property
@@ -284,9 +283,8 @@ class PTDS:
     def y(self):
         return self._y_transposed[self.indices]
     
-    def replace_y(self, y_pred):
-        y_pred = to_numpy(y_pred(self.X)) if callable(y_pred) else to_numpy(y_pred)
-        y_pred = self.inverse_transform_y(y_pred)
+    def replace_y(self, new_y):
+        y_pred = self._predict(new_y)
         offset = self._range_y.start
         indices = [ i + offset for i in self.indices ]
         assert len(y_pred) == len(indices), f'The number of predictions ({len(y_pred)}) does not match the number of samples ({len(indices)})'
@@ -305,8 +303,27 @@ class PTDS:
         from torch.utils.data import TensorDataset
         return TensorDataset(*self.tensors)
     
+    def _predict_y(self, predict):
+        if not callable(predict):
+            return predict
+        try:
+            from torch import nn
+            import torch
+            with torch.set_grad_enabled(False):
+                return to_numpy(predict(self.X_tensor)).reshape(len(self))
+        except:
+            raise
+        try:
+            return predict(self.X).reshape(len(self))
+        except:
+            raise
+            raise ValueError('predict mus be a function that works on Numpy arrays or PyTorch tensors')
+
+    def _predict(self, predict):
+        return self.inverse_transform_y(self._predict_y(predict))
+
     def predict(self, predict, drop=True):
-        y_pred = predict(self.X)
+        y_pred = self._predict_y(predict)
         if drop:
             return self._df.inverse_transform(self.X, y_pred)
         return self._df.inverse_transform(self.X, self.y, y_pred)

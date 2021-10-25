@@ -244,7 +244,7 @@ class image_databunch:
         if rotate is not None:
             t.append(transforms.RandomRotation(rotate))
         if color_jitter is not None:
-            t.append(transforms.ColorJitter((*color_jitter)))
+            t.append(transforms.ColorJitter(*color_jitter))
         if crop_size is not None or crop_padding is not None:
             if crop_size is None:
                 crop_size = size
@@ -288,12 +288,12 @@ class image_databunch:
     
     @staticmethod
     def channels(ds):
-        return tensor_ds(ds)[0][0].shape[0]
+        return image_databunch.tensor_ds(ds)[0][0].shape[0]
     
     @classmethod
     def train_normalize(cls, ds):
-        ds = tensor_ds(ds)
-        channels = channels(ds)
+        ds = image_databunch.tensor_ds(ds)
+        channels = image_databunch.channels(ds)
         total_mean = []
         total_std = []
         for c in range(channels):
@@ -429,6 +429,13 @@ class FastMNIST3(FastMNIST):
         return img, target
 
 def mnist(path='/data/datasets/mnist2', batch_size=64, transform=None, size=None, **kwargs):
+    '''
+    returns an image_databunch of the mnist dataset in greyscale (shape is (1,28,28).
+    path: folder where the mnist dataset is, or will be downloaded to if it does not exist
+    batch_size (64): batch_size used for segmenting for training.
+    transform (None): pipeline of transformations that are applied to the images
+    size (None): resizes the images to (size, size).
+    '''
     train_ds = FastMNIST(path, transform=transform, train=True, size=size, **kwargs)
     valid_ds = FastMNIST(path, transform=transform, train=False, size=size, **kwargs)
     db = image_databunch(train_ds, valid_ds, batch_size=batch_size, 
@@ -436,6 +443,13 @@ def mnist(path='/data/datasets/mnist2', batch_size=64, transform=None, size=None
     return db
 
 def mnist3(path='/data/datasets/mnist2', batch_size=64, size=None, transform=None, **kwargs):
+    '''
+    returns an image_databunch of the mnist dataset in rgb (shape is (3,28,28).
+    path: folder where the mnist dataset is, or will be downloaded to if it does not exist
+    batch_size (64): batch_size used for segmenting for training.
+    transform (None): pipeline of transformations that are applied to the images
+    size (None): resizes the images to (size, size).
+    '''
     train_ds = FastMNIST3(path, transform=transform, train=True, size=size, **kwargs)
     valid_ds = FastMNIST3(path, transform=transform, train=False, size=size, **kwargs)
     db = image_databunch(train_ds, valid_ds, batch_size=batch_size, 
@@ -477,8 +491,17 @@ def crawl_images(keywords, output_directory=None,
     """
     Downloads images through Google Image Search, 
     see https://google-images-download.readthedocs.io/en/latest/arguments.html 
-    for info on the arguments. When no output_directory is given, the downloaded images
-    are stored in /tmp/<username>/images/<query>.
+    for info on the arguments. 
+    keywords: the keywords passed to google image search to retrieve images
+    limit: maximum number of images to retrieve (default=200). You will actually receive less iamges because many links will not work
+    output_directory: base folder for the downloads (default: /tmp/username/images/)
+    image_directory: subpath to store the images for this query (by default uses the query name)
+    format: compression type of photos that are downloaded (default='jpg')
+    color-type: default='full-color', see https://google-images-download.readthedocs.io/en/latest/arguments.html
+    size: default='medium', see https://google-images-download.readthedocs.io/en/latest/arguments.html
+    type: default='photo', see https://google-images-download.readthedocs.io/en/latest/arguments.html
+    delay: default=0, to pause between downloads, see https://google-images-download.readthedocs.io/en/latest/arguments.html
+    kwargs: any additional arguments that google-images-download accepts.
     """
     kwargs = _gis_args(keywords, output_directory=output_directory, image_directory=image_directory, 
              limit=limit, format=format, color_type=color_type, size=size, type=type, delay=delay, 
@@ -490,6 +513,11 @@ def filter_images(keywords, folder=None, columns=4, height=200, width=200):
     """
     Removes duplicate images and shows the remaining images so that the user can manually select
     images to remove from the folder by pressing the DELETE button below.
+    keywords: subfolder of 'folder' in which the images are stored
+    folder: folder/output_directory where the crawled images are stored (e.g. /tmp/username/images)
+    columns (4): number of images displayed per row
+    height (200): height of the images in pixels
+    width (200): width of the images in pixels
     """
     def on_click(button):
         for r in rows:
@@ -533,4 +561,5 @@ def filter_images(keywords, folder=None, columns=4, height=200, width=200):
     button.on_click(on_click)
     rows.append(button)
     return widgets.VBox(rows)        
+
 

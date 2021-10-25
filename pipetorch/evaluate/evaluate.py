@@ -7,6 +7,7 @@ from operator import itemgetter
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import cm
 from .evaluateresults import EvaluatorResults
+from ..data.ptdataset import PTDS
 
 class Evaluator:
     def __init__(self, df, *metrics):
@@ -107,10 +108,10 @@ class Evaluator:
             return df.inverse_transform_y( y )
         return y
         
-    def _run(self, predict, X, y, df=None, **annot):
-        y_pred = predict(X)
-        self._store(y, y_pred, df=df, **annot)
-
+    def _store_predict(self, predict, df, **annot):
+        y_pred = df._predict(predict)
+        self._store(y, y_pred, df=df, **annot)        
+        
     def _store(self, y, y_pred, df=None, **annot):
         if df is None:
             df = self.df
@@ -122,24 +123,24 @@ class Evaluator:
     def score_train(self, predict, df=None, **annot):
         if df is None:
             df = self.df
-        self._run(predict, df.train_X, df.train_y, phase='train', df=df, **annot)
+        self._store_predict(predict, df.train, phase='train', **annot)
             
     def score_valid(self, predict, df=None, **annot):
         if df is None:
             df = self.df
         if len(df.valid_X) > 0:
-            self._run(predict, df.valid_X, df.valid_y, phase='valid', df=df, **annot)
+            self._store_predict(predict, df.valid, phase='valid', **annot)
 
     def score_test(self, predict, df=None, **annot):
         if df is None:
             df = self.df
         if len(df.test_X) > 0:
-            self._run(predict, df.test_X, df.test_y, phase='test', df=df, **annot)
+            self._store_predict(predict, df.test, phase='test', **annot)
                 
     def _order(self, X):
         return X[:, 0].argsort(axis=0)
 
-    def scatter2d_class(self, x1=None, x2=None, y=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, df=None, **kwargs):
+    def scatter2d_class(self, x1=None, x2=None, y=None, xlabel=None, ylabel=None, title=None, loc='best', noise=0, df=None, **kwargs):
         f = _figure2d(self, x1=x1, x2=x2, y=y, xlabel=xlabel, ylabel=ylabel, title=title, df=df, noise=noise)
         for c in sorted(np.unique(f.graph_y)):
             indices = (c == f.graph_y)
@@ -164,16 +165,10 @@ class Evaluator:
         xx, yy = np.meshgrid(np.arange(x_min, x_max, stepx),
                              np.arange(y_min, y_max, stepy))
         X = np.array(np.vstack([xx.ravel(), yy.ravel()])).T
-        s = self.df.from_numpy(X)
-        try:
-            return ax, xx, yy, predict(s.X).reshape(xx.shape)       
-        except:
-            try:
-                import torch
-                with torch.set_grad_enabled(False):
-                    return ax, xx, yy, predict(s.X_tensor).numpy().reshape(xx.shape)
-            except:
-                raise ValueError('predict mus be a function that works on Numpy arrays or PyTorch tensors')
+        dataset = self.df.from_numpy(X)
+        boundaries = dataset._predict(predict).to_numpy()
+        boundaries.resize(xx.shape)
+        return ax, xx, yy, boundaries
     
     def plot_boundary(self, predict):
         ax, xx, yy, boundary = self._boundaries(predict)
@@ -254,16 +249,16 @@ class Evaluator:
     def _figure(self, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, interpolate=0, df=None):
         return _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
     
-    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='upper right', **kwargs):
+    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='best', **kwargs):
         f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
         pltfunction(f.graph_x, f.graph_y, marker=marker, **kwargs)
         if 'label' in kwargs:
             plt.legend(loc=loc)
     
-    def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='upper right', **kwargs):
+    def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', **kwargs):
         self._plot(plt.plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, sort=True, df=df, loc=loc, **kwargs)
 
-    def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='upper right', **kwargs):
+    def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', **kwargs):
         self._plot(plt.scatter, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, loc=loc, **kwargs)
        
     def _select(self, select):

@@ -98,10 +98,10 @@ class EvaluatorResults(pd.DataFrame):
         self._plot(plt.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
         
     def line_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
-        self._evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
+        self.evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
 
     def scatter_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
-        self._evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
+        self.evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
 
 class _figure:
     def __init__(self, results, x=None, y=None, xlabel = None, ylabel = None, title = None ):

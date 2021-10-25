@@ -149,6 +149,10 @@ class Databunch:
     def inverse_transform(self, X, y, y_pred, cum=None):
         return self.df.inverse_transform(X, y, y_pred, cum=cum)
     
+    def from_numpy(self, X):
+        X = self.df.from_numpy(X)
+        
+    
     def predict(self, model, dl, device=None):
         import torch
         model.eval()

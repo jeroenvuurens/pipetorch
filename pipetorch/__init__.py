@@ -2,7 +2,7 @@ from .data import *
 from .evaluate import *
 from .model import *
 from .train import *
-#from .gpu import *
+from .gpu import *
 import matplotlib.pyplot as plt
 from .version import __version__
 import warnings

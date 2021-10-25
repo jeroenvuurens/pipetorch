@@ -6,7 +6,6 @@ from getpass import getuser
 import pandas as pd
 import numpy as np
 import pickle
-import path
 import os
 from sklearn.datasets import load_boston, load_iris
 import requests
@@ -120,11 +119,18 @@ def boston_housing_prices():
     """
     Load the Boston Housing Prices dataset and return it as a Pandas Dataframe
     """
-    boston = load_boston()
-    df = pd.DataFrame(boston['data'] )
-    df.columns = boston['feature_names']
-    df['PRICE'] = boston['target']
-    return PTDataFrame(df)
+    def read():
+        data_url = "http://lib.stat.cmu.edu/datasets/boston"
+        raw_df = pd.read_csv(data_url, sep="\s+", skiprows=22, header=None)
+        data = np.hstack([raw_df.values[::2, :], raw_df.values[1::2, :3]])
+        df = pd.DataFrame(data)
+        df.columns = ["CRIM", "ZN", "INDUS", "CHAS", "NOX", "RM", "AGE", "DIS", "RAD", "TAX", "PTRATIO", "B", "LSTAT", "PRICE"]
+        return df
+    #boston = load_boston()
+    #df = pd.DataFrame(boston['data'] )
+    #df.columns = boston['feature_names']
+    #df['PRICE'] = boston['target']
+    return read_csv('boston.scv', alternativesource=read)
 
 def iris():
     iris=load_iris()
@@ -213,9 +219,9 @@ def occupancy():
     #test = read_pd_csv('occupancy_test.csv', alternativesource=partial(read, 1))
     return PTDataFrame.from_dfs(train, valid)
 
-def ag_news(valid_perc=0.05, language='basic_english', min_freq=1, collate='pad', shuffle=True):
+def ag_news(language='basic_english', min_freq=1, collate='pad'):
     train_iter, test_iter = read_torchtext(AG_NEWS)
-    tc = TextCollection.from_iter(train_iter, None, test_iter, min_freq=min_freq, shuffle=shuffle).split(valid_perc).collate(collate)
+    tc = TextCollection.from_iter(train_iter, None, test_iter, min_freq=min_freq).collate(collate)
     return tc
 
 _ptdatasetslist = [('Indian Liver Disease', 'pt.indian_liver()', 'https://archive.ics.uci.edu/ml/datasets/ILPD+(Indian+Liver+Patient+Dataset)'),
