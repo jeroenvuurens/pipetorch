@@ -299,6 +299,7 @@ class PT:
                 mask = np.hstack([self._pseudo_choose(classindices[c], n) for c in classes])
             else:                        # use given weights
                 weights = self._pt_balance
+                print(weights, [ c, classlengths[c], classindices[c], weights[c] for c, w in weights.items() ])
                 n = max([ int(math.ceil(classlengths[c] / w)) for c, w in weights.items() ])
                 mask = np.hstack([self._pseudo_choose(classindices[c], n*weights[c]) for c in classes])
             indices = np.array(indices)[ mask ]
