@@ -93,13 +93,35 @@ class Evaluator:
     def _dict_to_df(self, *dicts):
         return pd.concat([pd.DataFrame(d, index=[0]) for d in dicts], axis=1)
 
-    def run(self, train, predict, model=None, df=None, **annot):
+    def run(self, train, predict, model=None, df=None, n_splits=1, **annot):
         if df is None:
             df = self.df
-        train(df.train_X, df.train_y)
-        self.score_train(predict, df=df, **annot)
-        self.score_valid(predict, df=df, **annot)
-
+        if n_splits == 1:
+            train(df.train_X, df.train_y)
+            self.score_train(predict, df=df, **annot)
+            self.score_valid(predict, df=df, **annot)
+        else:
+            results_train = defaultdict(lambda:0)
+            results_valid = defaultdict(lambda:0)
+            for dfk in df.kfold(n_splits=n_splits):
+                train(dfk.train_X, dfk.train_y)
+                y_pred = dfk.valid._predict(predict)
+                y = dfk._inverse_transform_y( y )
+                y_pred = dfk._inverse_transform_y( y_pred )
+                metrics = self.compute_metrics(y, y_pred)
+                for k, v in metrics.items():
+                    results_valid[k] += v / n_splits
+                y_pred = dfk.train._predict(predict)
+                y = dfk._inverse_transform_y( y )
+                y_pred = dfk._inverse_transform_y( y_pred )
+                metrics = self.compute_metrics(y, y_pred)
+                for k, v in metrics.items():
+                    results_train[k] += v / n_splits
+            results_train['phase'] = 'train'
+            results_valid['phase'] = 'valid'
+            self.results = self.results._add(self._dict_to_df(train_results, annot))
+            self.results = self.results._add(self._dict_to_df(valid_results, annot))
+            
     def run_sklearn(self, model, df=None, **annot):
         self.run(model.fit, model.predict, model=model, df=df, **annot)
 

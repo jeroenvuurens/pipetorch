@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.utils import resample
+from sklearn.model_selection import KFold
 import matplotlib.pyplot as plt
 import copy
 import math
@@ -299,9 +300,8 @@ class PT:
                 mask = np.hstack([self._pseudo_choose(classindices[c], n) for c in classes])
             else:                        # use given weights
                 weights = self._pt_balance
-                print(weights, [ c, classlengths[c], classindices[c], weights[c] for c, w in weights.items() ])
                 n = max([ int(math.ceil(classlengths[c] / w)) for c, w in weights.items() ])
-                mask = np.hstack([self._pseudo_choose(classindices[c], n*weights[c]) for c in classes])
+                mask = np.hstack([self._pseudo_choose(classindices[c], round(n*weights[c])) for c in classes])
             indices = np.array(indices)[ mask ]
         return indices
 
@@ -348,6 +348,20 @@ class PT:
         """
         return Databunch(self, *self.to_dataset(*dfs), batch_size=batch_size, num_workers=num_workers, shuffle=shuffle, pin_memory=pin_memory, balance=balance)    
 
+    def kfold(self, n_splits=5):
+        """
+        Prepare the PipeTorch DataFrame for k-fold cross validation.
+        n_splits: the number of folds
+        return: a sequence of k PipeTorch DataFrames across which every item is used in the validation set once
+        and the training splits and validation splits are disjoint.
+        """
+        kf = KFold(n_splits=n_splits)
+        for train_ind, valid_ind in kf.split(self._train_indices):
+            r = copy.copy(self)
+            r._train_indices = self._train_indices[train_ind]
+            r._valid_indices = self._train_indices[valid_ind]
+            yield r
+    
     def evaluate(self, *metrics):
         return Evaluator(self, *metrics)
    
