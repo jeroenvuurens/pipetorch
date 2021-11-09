@@ -8,6 +8,7 @@ import numpy as np
 import pickle
 import os
 from sklearn.datasets import load_boston, load_iris
+from sklearn.metrics import f1_score
 import requests
 from io import BytesIO
 from zipfile import ZipFile
@@ -131,6 +132,30 @@ def boston_housing_prices():
     #df.columns = boston['feature_names']
     #df['PRICE'] = boston['target']
     return read_csv('boston.scv', alternativesource=read)
+
+def hotel():
+    df = read_csv('hotel.csv', na_values=['NULL'], skipinitialspace=True)
+    df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
+    df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
+    df = df[[ c for c in df if c != 'IsCanceled'] + ['IsCanceled']]
+    train = df[(df.ArrivalDateYear < 2017) | (df.ArrivalDateWeekNumber < 14)]
+    return PTDataFrame(train)
+
+def hotel_test_orig():
+    df = read_csv('hotel.csv', na_values=['NULL'], skipinitialspace=True)
+    df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
+    df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
+    hotel = df[(df.ArrivalDateYear == 2017) & (df.ArrivalDateWeekNumber > 13)]
+    return PTDataFrame(hotel)
+
+def hotel_test():
+    return hotel_test_orig().drop(columns='IsCanceled')
+
+def hotel_test_y():
+    return hotel_test_orig()[['IsCanceled']]
+
+def hotel_test_score(pred_y):
+    return f1_score(hotel_test_y(), pred_y)
 
 def iris():
     iris=load_iris()

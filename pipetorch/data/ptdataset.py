@@ -17,16 +17,14 @@ def to_numpy(arr):
     return arr
 
 class PTDS:
-    _metadata = ['_df', '_dfindices', '_pt_categoryx', '_pt_categoryy', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_is_test']
-    _internal_names = pd.DataFrame._internal_names + ["_pt__indices"]
+    _metadata = ['_df', '_dfindices', '_pt_categoryx', '_pt_categoryy', '_pt_dummiesx', '_pt_dummiesy', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_is_test']
+    _internal_names = pd.DataFrame._internal_names + ["_pt__indices", "_pt__x_sequence"]
     _internal_names_set = set(_internal_names)
     
     def to_ptdataframe(self):
         cls = self._df.__class__
         r = cls(self)
 
-        r._pt__categoryx = self._pt_categoryx
-        r._pt__categoryy = self._pt_categoryy
         r._pt_columnx = self._pt_columnx
         r._pt_columny = self._pt_columny
         r._pt_transposey = self._pt_transposey
@@ -54,6 +52,8 @@ class PTDS:
         r._dfindices = self._dfindices
         r._pt_categoryx = self._pt_categoryx
         r._pt_categoryy = self._pt_categoryy
+        r._pt_dummiesx = self._pt_dummiesx
+        r._pt_dummiesy = self._pt_dummiesy
         r._pt_columny = self._pt_columny
         r._pt_columnx = self._pt_columnx
         r._pt_is_test = self._pt_is_test
@@ -100,11 +100,19 @@ class PTDS:
 
     @property
     def _categoryx(self):
-        return self._pt_categoryx
+        return self._pt_categoryx()
         
     @property
     def _categoryy(self):
-        return self._pt_categoryy
+        return self._pt_categoryy()
+
+    @property
+    def _dummiesx(self):
+        return self._pt_dummiesx()
+        
+    @property
+    def _dummiesy(self):
+        return self._pt_dummiesy()
 
     @property
     def _shift_y(self):
@@ -187,8 +195,23 @@ class PTDS:
         return r
     
     @property
+    def _x_dummies(self):
+        if self._dummiesx is None:
+            return self._x_category
+        r = copy.copy(self._x_category)
+        r1 = []
+        for d, onehot in zip(r._columnx, r._dummiesx):
+            if onehot is not None:
+                a = onehot.transform(r[[d]])
+                r1.append( pd.DataFrame(a.toarray(), columns=onehot.get_feature_names_out([d])) )
+                r = r.drop(columns = d)
+        r1.insert(0, r.reset_index(drop=True))
+        r = pd.concat(r1, axis=1)
+        return r
+    
+    @property
     def _x_numpy(self):
-        return self._x_category.to_numpy()
+        return self._x_dummies.to_numpy()
     
     @property
     def _x_polynomials(self):
@@ -212,12 +235,17 @@ class PTDS:
     
     @property
     def _x_sequence(self):
-        if not self._is_sequence:
-            return self._x_biased
-        X = self._x_biased
-        window = self._sequence_window
-        len_seq_mode = max(0, len(X) - window + 1)
-        return np.concatenate([np.expand_dims(X[ii:ii+window], axis=0) for ii in range(len_seq_mode)], axis=0)        
+        try:
+            return self._pt__x_sequence
+        except:
+            if not self._is_sequence:
+                self._pt__x_sequence = self._x_biased
+            else:
+                X = self._x_biased
+                window = self._sequence_window
+                len_seq_mode = max(0, len(X) - window + 1)
+                self._pt__x_sequence =  np.concatenate([np.expand_dims(X[ii:ii+window], axis=0) for ii in range(len_seq_mode)], axis=0)        
+            return self._pt__x_sequence
     
     @property
     def X(self):
@@ -260,14 +288,29 @@ class PTDS:
         if self._categoryy is None:
             return self[self._columny]
         r = copy.copy(self[self._columny])
-        for c, cat in zip(r._columny, r._categoryy):
-            if cat is not None:
+        for d, onehot in zip(r._columny, r._dummiesy):
+            if onehot is not None:
                 r[c] = cat.transform(r[c])
         return r
     
     @property
+    def _y_dummies(self):
+        if self._dummiesy is None:
+            return self._y_category
+        r = copy.copy(self._y_category)
+        r1 = []
+        for d, onehot in zip(r._columny, r._dummiesy):
+            if onehot is not None:
+                a = onehot.transform(r[[d]])
+                r1.append( pd.DataFrame(a.toarray(), columns=onehot.get_feature_names_out([d])) )
+                r = r.drop(columns = d)
+        r1.insert(0, r.reset_index(drop=True))
+        r = pd.concat(r1, axis=1)
+        return r
+    
+    @property
     def _y_numpy(self):
-        return self._y_category.to_numpy()
+        return self._y_dummies.to_numpy()
     
     @property
     def _y_scaled(self):
@@ -384,6 +427,8 @@ class PTDataSet(pd.DataFrame, PTDS):
         r._dfindices = dfindices
         r._pt_categoryx = df._categoryx
         r._pt_categoryy = df._categoryy
+        r._pt_dummiesx = df._dummiesx
+        r._pt_dummiesy = df._dummiesy
         r._pt_columny = df._columny
         r._pt_columnx = df._columnx
         r._pt_transposey = df._transposey

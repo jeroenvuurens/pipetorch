@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures, OneHotEncoder
 from sklearn.utils import resample
 from sklearn.model_selection import KFold
 import matplotlib.pyplot as plt
@@ -13,6 +13,7 @@ from ..evaluate.evaluate import Evaluator
 from .databunch import Databunch
 from .ptdataset import PTDataSet
 from pandas.core.groupby.generic import DataFrameGroupBy, SeriesGroupBy
+from collections import defaultdict
 
 def to_numpy(arr):
     try:
@@ -40,7 +41,7 @@ class show_warning:
         self.warning.__exit__(exc_type, exc_value, exc_traceback)
 
 class PT:
-    _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', '_pt_len', '_pt_indices', '_pt_train_valid_indices', '_pt_test_indices']
+    _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', '_pt_dummies', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', '_pt_len', '_pt_indices', '_pt_train_valid_indices', '_pt_test_indices']
 
     @classmethod
     def read_csv(cls, path, **kwargs):
@@ -156,7 +157,6 @@ class PT:
             s[i] = self._create_scaler(self._pt_scalertype, y[:, i:i+1])
         return s
     
-    @property
     def _categoryx(self):
         try:
             if self._pt_category is None or len(self._pt_category) == 0:
@@ -164,7 +164,6 @@ class PT:
         except: pass
         return [ self._create_category(c) for c in self._columnx ]          
     
-    @property
     def _categoryy(self):
         try:
             if self._pt_category is None or len(self._pt_category) == 0:
@@ -179,8 +178,8 @@ class PT:
                 s = X.unique()
                 if sort:
                     s = sorted(s)
-                self.dict = { v:i for i, v in enumerate(s) }
-                self.inverse_dict = { i:v for i, v in enumerate(s) }
+                self.dict = defaultdict(lambda:0, { v:(i+1) for i, v in enumerate(s) })
+                self.inverse_dict = { (i+1):v for i, v in enumerate(s) } + {0:np.NaN}
             
             def transform(self, X):
                 return X.map(self.dict)
@@ -192,7 +191,29 @@ class PT:
             return None
         
         c = Category()
-        c.fit(self[column])
+        c.fit(self.train[column])
+        return c
+    
+    def _dummiesx(self):
+        try:
+            if self._pt_dummies is None or len(self._pt_dummies) == 0:
+                return None
+        except: pass
+        return [ self._create_dummies(c) for c in self._columnx ]          
+    
+    def _dummiesy(self):
+        try:
+            if self._pt_dummies is None or len(self._pt_dummies) == 0:
+                return None
+        except: pass
+        return [ self._create_dummies(c) for c in self._columny ]
+
+    def _create_dummies(self, column):    
+        if column not in self._pt_dummies:
+            return None
+        
+        c = OneHotEncoder(handle_unknown='ignore')
+        c.fit(self.train[[column]])
         return c
     
     @property
@@ -594,17 +615,46 @@ class PTSet:
         Converts the values in the targetted columns into indices, for example to use in lookup tables.
         columns that are categorized are excluded from scaling. You cannot use this function together
         with polynomials or bias.
+        
+        Note: PipeTorch only uses categories that are in the training set and uses category 0 as
+        an unknown category number for categories in the validation and test set that are not known during training.
+        This way, no future information is used. 
+        
         columns: list of columns that is to be converted into a category
         sort: True/False (default False) whether the unique values of these colums should be converted to indices in sorted order.
         return: dataframe where the columns are converted into categories, 
         for which every unique value is converted into a unique index starting from 0
+        
         """
         assert self._pt_polynomials is None, 'You cannot combine categories with polynomials'
+        assert self._pt_bias is None, 'You cannot combine categories with polynomials'
         r = copy.copy(self)
         r._pt_category = columns
         r._pt_category_sort = sort
         return r
     
+    def dummies(self, *columns):
+        """
+        Converts the values in the targetted columns into dummy variables.
+        columns that are categorized are excluded from scaling. You cannot use this function together
+        with polynomials or bias.
+        
+        Note: PipeTorch only uses categories that are in the training set and uses category 0 as
+        an unknown category number for categories in the validation and test set that are not known during training.
+        This way, no future information is used. 
+        
+        columns: list of columns that is to be converted into a category
+        sort: True/False (default False) whether the unique values of these colums should be converted to indices in sorted order.
+        return: dataframe where the columns are converted into categories, 
+        for which every unique value is converted into a unique index starting from 0
+        
+        """
+        assert self._pt_polynomials is None, 'You cannot combine categories with polynomials'
+        assert self._pt_bias is None, 'You cannot combine categories with polynomials'
+        r = copy.copy(self)
+        r._pt_dummies = columns
+        return r
+
     def sequence(self, window, shift_y = 1):
         r = copy.copy(self)
         r._pt_sequence_window = window
@@ -627,7 +677,7 @@ class PTDataFrame(pd.DataFrame, PT, PTSet):
         return self._copy_meta( PTGroupedDataFrame(r) )
 
 class PTLockedDataFrame(pd.DataFrame, PT):
-    _internal_names = ['_pt__scale_columns', '_pt__train', '_pt__valid', '_pt__test', '_pt__full', '_pt__scalerx', '_pt__scalery', '_pt__train_x', '_pt__train_y', '_pt__valid_x', '_pt__valid_y', '_pt__categoryx', '_pt__categoryy', '_pt__train_indices', '_pt__valid_indices', '_pt__test_indices']
+    _internal_names = ['_pt__scale_columns', '_pt__train', '_pt__valid', '_pt__test', '_pt__full', '_pt__scalerx', '_pt__scalery', '_pt__train_x', '_pt__train_y', '_pt__valid_x', '_pt__valid_y', '_pt__categoryx', '_pt__categoryy', '_pt__dummiesx', '_pt__dummiesy', '_pt__train_indices', '_pt__valid_indices', '_pt__test_indices']
     _metadata = PT._metadata + _internal_names
 
     def __init__(self, data, **kwargs):
@@ -677,6 +727,24 @@ class PTLockedDataFrame(pd.DataFrame, PT):
         self._pt__categoryy = super()._categoryy
         return self._pt__categoryy            
 
+    @property
+    def _dummiesy(self):
+        try:
+            if self._pt__dummiesy is not None:
+                return self._pt__dummiesy
+        except: pass
+        self._pt__dummiesy = super()._dummiesy
+        return self._pt__dummiesy            
+
+    @property
+    def _dummiesx(self):
+        try:
+            if self._pt__dummiesx is not None:
+                return self._pt__dummiesx
+        except: pass
+        self._pt__dummiesx = super()._dummiesx
+        return self._pt__dummiesx            
+    
     @property
     def full(self):
         try:
