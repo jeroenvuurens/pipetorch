@@ -134,7 +134,7 @@ def boston_housing_prices():
     return read_csv('boston.scv', alternativesource=read)
 
 def hotel():
-    df = read_csv('hotel.csv', na_values=['NULL'], skipinitialspace=True)
+    df = read_csv('/data/datasets/hotel.csv', na_values=['NULL'], skipinitialspace=True)
     df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
     df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
     df = df[[ c for c in df if c != 'IsCanceled'] + ['IsCanceled']]
@@ -142,7 +142,7 @@ def hotel():
     return PTDataFrame(train)
 
 def hotel_test_orig():
-    df = read_csv('hotel.csv', na_values=['NULL'], skipinitialspace=True)
+    df = read_csv('/data/datasets/hotel.csv', na_values=['NULL'], skipinitialspace=True)
     df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
     df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
     hotel = df[(df.ArrivalDateYear == 2017) & (df.ArrivalDateWeekNumber > 13)]
