@@ -252,3 +252,37 @@ def read_csv(filename, nrows=100, drop=None, columns=None, dtype=dict(), intcols
         df = df[columns]
     return df
 
+class nonondict(dict):
+    """
+    A dict that does not store None values, which is used to keep a
+    dict of parameters for function calls, in which setting to None
+    does not override the default setting.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.update(*args, **kwargs)
+        
+    def __setitem__(self, key, value):
+        if value is None:
+            try:
+                del self[key]
+            except: pass
+        else:
+            super().__setitem__(key, value)
+
+    def setifnone(self, key, value):
+        """
+        Set a key to a value, only if that key does not yet exists.
+        Since None values are not added, this also applies to keys
+        that are previously set to None.
+        
+        Arguments:
+            key: str
+            value: any
+        """
+        if key not in self:
+            self[key] = value
+            
+    def update(self, *args, **kwargs):
+        for k, v in dict(*args, **kwargs).items():
+            self[k] = v

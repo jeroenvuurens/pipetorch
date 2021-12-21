@@ -249,6 +249,9 @@ def ag_news(language='basic_english', min_freq=1, collate='pad'):
     tc = TextCollection.from_iter(train_iter, None, test_iter, min_freq=min_freq).collate(collate)
     return tc
 
+def bbc_news(language='basic_english', min_freq=1, collate='pad'):
+    return TextCollection.from_csv('/data/datasets/bbc-text.csv', language=language, min_freq=min_freq).collate(collate)
+
 _ptdatasetslist = [('Indian Liver Disease', 'pt.indian_liver()', 'https://archive.ics.uci.edu/ml/datasets/ILPD+(Indian+Liver+Patient+Dataset)'),
             ('Historial flight passengers', 'pt.flight_passengers()', 'From Seaborn library'),
             ('Advertising channels', 'pt.advertising_channels()', 'https://www.kaggle.com/ashydv/advertising-dataset'),

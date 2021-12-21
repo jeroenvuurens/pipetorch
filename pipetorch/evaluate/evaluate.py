@@ -8,6 +8,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import cm
 from .evaluateresults import EvaluatorResults
 from ..data.ptdataset import PTDS
+from collections.abc import Iterable
 
 class Evaluator:
     def __init__(self, df, *metrics):
@@ -91,7 +92,11 @@ class Evaluator:
         return dict()
 
     def _dict_to_df(self, *dicts):
-        return pd.concat([pd.DataFrame(d, index=[0]) for d in dicts], axis=1)
+        r = []
+        for d in dicts:
+            d = { key:([value] if isinstance(value, Iterable) else value) for key,value in d.items() }
+            r.append( pd.DataFrame(d, index=[0]))
+        return pd.concat(r, axis=1)
 
     def run(self, train, predict, model=None, df=None, n_splits=1, **annot):
         if df is None:

@@ -28,11 +28,18 @@ class TextCollection:
     
     @classmethod
     def from_iter(cls, train_iter, valid_iter=None, test_iter=None, language='basic_english', min_freq=1, specials=('<unk>', '<pad>')):
-        train = TextDataSet(train_iter)
-        valid = None if valid_iter is None else TextDataSet(valid_iter)
-        test = None if test_iter is None else TextDataSet(test_iter)
+        train = TextDataSet.from_iter(train_iter)
+        valid = None if valid_iter is None else TextDataSet.from_iter(valid_iter)
+        test = None if test_iter is None else TextDataSet.from_iter(test_iter)
         return cls(train, valid=valid, test=test, language=language, min_freq=min_freq, specials=specials)
     
+    @classmethod
+    def from_csv(cls, train_filename, valid_filename=None, test_filename=None, language='basic_english', min_freq=1, specials=('<unk>', '<pad>')):
+        train = TextDataSet.from_csv(train_filename)
+        valid = None if valid_filename is None else TextDataSet.from_csv(valid_filename)
+        test = None if test_filename is None else TextDataSet.from_csv(test_filename)
+        return cls(train, valid=valid, test=test, language=language, min_freq=min_freq, specials=specials)
+
     @property
     def _collate(self):
         return self.__collate
@@ -290,9 +297,21 @@ class LabelSet:
     def lookup_ints(self, ints):
         return [self._itol[i] for i in ints]
 
-class TextDataSet:
-    def __init__(self, it):
-        self.data = list(it)
+class TextDataSet:    
+    @classmethod
+    def from_iter(cls, it):
+        r = cls()
+        r.data = list(it)
+        return r
+        
+    @classmethod
+    def from_csv(cls, filename, header=True, delimiter=','):
+        r = cls()
+        with open(filename) as fin:
+            r.data = [ l.split(delimiter, 1) for l in fin ]
+        if header:
+            r.data = r.data[1:]
+        return r
     
     def __len__(self):
         return len(self.data)

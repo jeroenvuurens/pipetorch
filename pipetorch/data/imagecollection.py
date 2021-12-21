@@ -86,7 +86,8 @@ class ImageDataset(Dataset):
 
 class image_databunch:
     def __init__(self, train_ds, valid_ds, batch_size=32, valid_batch_size=None, shuffle=True, num_workers=0, 
-                 pin_memory=False, valid_pin_memory=None, normalized_mean=None, normalized_std=None):
+                 pin_memory=False, valid_pin_memory=None, normalized_mean=None, normalized_std=None, 
+                 classes=None, class_to_idx=None):
         self.train_ds = train_ds
         self.valid_ds = valid_ds
         self.batch_size = batch_size
@@ -97,6 +98,8 @@ class image_databunch:
         self.pin_memory = pin_memory
         self.normalized_mean = normalized_mean
         self.normalized_std = normalized_std
+        self.classes = classes
+        self.class_to_idx = class_to_idx
 
     @staticmethod
     def balance(X, y):
@@ -151,6 +154,10 @@ class image_databunch:
         #assert len(metrics) > 0, 'You need to provide at least one metric for the evaluation'
         return Evaluator(self, *metrics)
 
+    @property
+    def labels(self):
+        return self._labels
+    
     @property
     def train_dl(self):
         try:
@@ -224,10 +231,12 @@ class image_databunch:
             for x,y,ax in zip(Xs, ys, axs.flatten()):
                 x = x.cpu()
                 x = invnormalize(x)
-                #x = (1/(2*2.25)) * x / 0.25 + 0.5
                 im = transforms.ToPILImage()(x).convert("RGB")
                 im = transforms.Resize([100,100])(im)
                 ax.imshow(im)
+                try:
+                    y = self.classes[y]
+                except: pass
                 ax.set_title(f'y={y}')
             for ax in axs.flatten()[len(Xs):]:
                 ax.axis('off')
@@ -250,7 +259,6 @@ class image_databunch:
                 crop_size = size
             if crop_padding is None:
                 crop_padding = 0
-            #t.append(Resize(crop_size + 2 * crop_padding))
             t.append(transforms.RandomCrop(crop_size, padding=crop_padding, pad_if_needed=True))
         if size is not None:
             t.append(transforms.Resize([size,size]))
@@ -300,7 +308,7 @@ class image_databunch:
             s = torch.cat([X[c].view(-1) for X, y in ds])
             total_mean.append(s.mean())
             total_std.append(s.std())
-        return tuple(total_mean), tuple(total_std) 
+        return torch.tensor(total_mean), torch.tensor(total_std) 
     
     @classmethod
     def from_image_folder(cls, path, valid_size=0.2, target_transform=None, size=224, crop_size=None, crop_padding=None, color_jitter=None, rotate=None, do_flip=None, normalize_mean=None, normalize_std=None, normalize=False, **kwargs):
@@ -316,7 +324,8 @@ class image_databunch:
         valid_transforms = cls.get_transformations(size=size, normalize_mean=normalize_mean, normalize_std=normalize_std)
         train_ds = TransformableDataset(Subset(ds, train_idx), train_transforms)
         valid_ds = TransformableDataset(Subset(ds, valid_idx), valid_transforms)
-        return cls(train_ds, valid_ds, **kwargs)
+        return cls(train_ds, valid_ds, classes=ds.classes, class_to_idx=ds.class_to_idx, 
+                   normalized_mean=normalize_mean, normalized_std=normalize_std, **kwargs)
 
     @classmethod
     def from_image_folders(cls, trainpath, validpath, size=None, transform=None, target_transform=None, **kwargs):
@@ -337,7 +346,7 @@ class image_databunch:
  
         train_ds = ImageFolder(root=trainpath, transform=train_transforms, target_transform=target_transform)
         valid_ds = ImageFolder(root=validpath, transform=valid_transforms, target_transform=target_transform)
-        return cls(train_ds, valid_ds, **kwargs)
+        return cls(train_ds, valid_ds, classes=train_ds.classes, class_to_idx=train_ds.class_to_idx, **kwargs)
 
 class TransformableDataset(Dataset):
     def __init__(self, dataset, transform=None):

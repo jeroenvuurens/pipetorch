@@ -1,5 +1,6 @@
 import GPUtil
 import os
+import torch
 
 def available_gpu():
     try:
@@ -20,6 +21,7 @@ def select_gpu():
     return ''
 
 list_gpus = GPUtil.showUtilization
+torch.set_num_threads(4)
 
 if 'GPU' not in os.environ:
     os.environ['GPU'] = select_gpu()

@@ -76,7 +76,7 @@ class tuner:
                         self.lrupdate(lr)
                         *X, y = self.next_train()
                         loss, pred_y = self.trainer.train_batch(*X, y=y)
-                        loss = self.trainer.validate_loss(validation_set)
+                        loss = self.trainer.loss_dl(validation_set)
                         try:
                             loss = self.smooth * loss + (1 - self.smooth) * sloss[-1]
                         except: pass
@@ -131,3 +131,4 @@ class tuner:
 
         for p in param2_values:
             self.trainer.remove_checkpoint(f'param2_{p:.2E}')
+
