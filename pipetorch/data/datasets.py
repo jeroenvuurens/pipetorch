@@ -8,9 +8,7 @@ import pickle
 import os
 from sklearn.datasets import load_boston, load_iris
 from sklearn.metrics import f1_score
-import requests
 from io import BytesIO
-from zipfile import ZipFile
 from functools import partial
 
 def path_user():
@@ -231,6 +229,14 @@ def occupancy():
     """
     Loads the occupancy dataset. Note that this loader does not respect the original train/valid/test split.
     """
+    try:
+        import requests
+    except:
+        raise ModuleNotFoundError('You should install request to use this function.')
+    try:
+        from zipfile import ZipFile    
+    except:
+        raise ModuleNotFoundError('You should install zipfile to use this function.')
     def read(i):
         url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/00357/occupancy_data.zip'
         content = requests.get(url)
