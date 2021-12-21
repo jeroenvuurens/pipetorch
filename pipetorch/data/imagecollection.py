@@ -14,7 +14,6 @@ from IPython.core import pylabtools
 from pathlib import Path
 import sys
 from IPython import get_ipython
-from google_images_download import google_images_download
 from tqdm.notebook import tqdm
 import ipywidgets as widgets
 import io
@@ -512,10 +511,14 @@ def crawl_images(keywords, output_directory=None,
     delay: default=0, to pause between downloads, see https://google-images-download.readthedocs.io/en/latest/arguments.html
     kwargs: any additional arguments that google-images-download accepts.
     """
+    try:
+        from .google_images_download import googleimagesdownload
+    except:
+        raise NotImplemented('Need google images download for this')
     kwargs = _gis_args(keywords, output_directory=output_directory, image_directory=image_directory, 
              limit=limit, format=format, color_type=color_type, size=size, type=type, delay=delay, 
              **kwargs)
-    response = google_images_download.googleimagesdownload()   #class instantiation
+    response = googleimagesdownload()   #class instantiation
     paths = response.download(kwargs)   #passing the arguments to the function
     
 def filter_images(keywords, folder=None, columns=4, height=200, width=200):
