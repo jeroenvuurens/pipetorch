@@ -1,6 +1,5 @@
 from .ptdataframe import PTDataFrame
 from .textcollection import TextCollection
-from torchtext.datasets import AG_NEWS
 from pathlib import Path
 from getpass import getuser
 import pandas as pd
@@ -245,6 +244,7 @@ def occupancy():
     return PTDataFrame.from_dfs(train, valid)
 
 def ag_news(language='basic_english', min_freq=1, collate='pad'):
+    from torchtext.datasets import AG_NEWS
     train_iter, test_iter = read_torchtext(AG_NEWS)
     tc = TextCollection.from_iter(train_iter, None, test_iter, min_freq=min_freq).collate(collate)
     return tc
