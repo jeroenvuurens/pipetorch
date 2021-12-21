@@ -1,6 +1,6 @@
-from torchtext.data.utils import get_tokenizer, ngrams_iterator
+#from torchtext.data.utils import get_tokenizer
 from collections import Counter
-from torchtext.vocab import Vocab, build_vocab_from_iterator, FastText, GloVe
+#from torchtext.vocab import Vocab, build_vocab_from_iterator, FastText, GloVe
 from torch.utils.data import DataLoader, IterableDataset
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data.dataset import random_split
@@ -120,6 +120,7 @@ class TextCollection:
         try:
             return self._tokenizer
         except:
+            from torchtext.data.utils import get_tokenizer
             self._tokenizer = get_tokenizer(self.language)
             return self._tokenizer
 
@@ -183,6 +184,8 @@ class TextCollection:
         return yield_tokens(dataset)
     
     def _build_vocab(self):
+        from torchtext.vocab import build_vocab_from_iterator
+
         labels = Counter([ l for l, _ in self.train ])
         self._vocab = build_vocab_from_iterator(self.token_iterator(self.train), specials=self.specials, special_first=True, min_freq=self.min_freq)
         self._vocab.set_default_index(self._vocab['<unk>'])
@@ -219,6 +222,7 @@ class TextCollection:
         max_vectors: use only the indicated number of vectors to save RAM. Since the tokens are sorted on frequency,
         using only the n most frequently appearing tokens works well in most cases.
         """
+        from torchtext.vocab import GloVe
         r = copy.copy(self)
         r._pretrained = GloVe
         r._pretrained_params = {'name':name, 'cache':cache, 'max_vectors':max_vectors}
