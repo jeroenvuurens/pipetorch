@@ -17,7 +17,7 @@ setup(
          "Development Status :: 3 - Alpha",
          "Intended Audience :: Education",
          "Intended Audience :: Science/Research",
-         "Topic :: Scientif/Enginering :: Artificial Intelligence",
+         "Topic :: Scientific/Engineering :: Artificial Intelligence",
          "Topic :: Software Development :: Libraries :: Python Modules",
          "Programming Language :: Python :: 3",
          "License :: OSI Approved :: MIT License",

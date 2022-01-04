@@ -1,4 +1,4 @@
-from .ptdataframe import PTDataFrame
+from .dframe import DFrame
 from .textcollection import TextCollection
 from pathlib import Path
 from getpass import getuser
@@ -33,9 +33,9 @@ def read_excel(path, filename=None, alternativesource=None, sep=None, delimiter=
     if filename is None:
         filename = get_filename(path)
     if (path_user() / filename).is_file():
-        return PTDataFrame.read_csv(path_user() / filename, **kwargs)
+        return DFrame.read_csv(path_user() / filename, **kwargs)
     if (path_shared() / filename).is_file():
-        return PTDataFrame.read_csv(path_shared() / filename, **kwargs)
+        return DFrame.read_csv(path_shared() / filename, **kwargs)
     if alternativesource:
         df = pd.read_excel(alternativesource())
     else:
@@ -44,7 +44,7 @@ def read_excel(path, filename=None, alternativesource=None, sep=None, delimiter=
         df.columns = df.columns.str.replace(' ', '') 
     (path_user()).mkdir(exist_ok=True)
     df.to_csv(path_user() / filename, index=False)
-    return PTDataFrame(df)
+    return DFrame(df)
 
 def read_pd_csv(path, filename=None, alternativesource=None, sep=None, delimiter=None, **kwargs):
     if sep:
@@ -72,10 +72,10 @@ def read_pd_csv(path, filename=None, alternativesource=None, sep=None, delimiter
     return df
 
 def read_csv(path, filename=None, alternativesource=None, sep=None, delimiter=None, **kwargs):
-    return PTDataFrame(read_pd_csv(path, filename=filename, alternativesource=alternativesource, sep=sep, delimiter=delimiter, **kwargs))
+    return DFrame(read_pd_csv(path, filename=filename, alternativesource=alternativesource, sep=sep, delimiter=delimiter, **kwargs))
 
 def read_csv_file(filename, **kwargs):
-    return PTDataFrame(pd.read_csv(filename, **kwargs))
+    return DFrame(pd.read_csv(filename, **kwargs))
 
 def read_torchtext(torchtext_function):
     try:
@@ -108,7 +108,7 @@ def dam_outflow():
             train_indices = [ i for i, v in enumerate(X_all) if (X_train == v).any() ]
             X_all = X_all.astype(np.float32)
             y_all = y_all.astype(np.float32)
-            df = PTDataFrame(np.concatenate([X_all, y_all.reshape(-1, 1)], axis=1), columns=['waterlevel', 'outflow'])
+            df = DFrame(np.concatenate([X_all, y_all.reshape(-1, 1)], axis=1), columns=['waterlevel', 'outflow'])
         return df
     except:
         print('This dataset is not online, but was taken from Andrew Ng\'s Coursera course')
@@ -136,14 +136,14 @@ def hotel():
     df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
     df = df[[ c for c in df if c != 'IsCanceled'] + ['IsCanceled']]
     train = df[(df.ArrivalDateYear < 2017) | (df.ArrivalDateWeekNumber < 14)]
-    return PTDataFrame(train)
+    return DFrame(train)
 
 def hotel_test_orig():
     df = read_csv('/data/datasets/hotel.csv', na_values=['NULL'], skipinitialspace=True)
     df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
     df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
     hotel = df[(df.ArrivalDateYear == 2017) & (df.ArrivalDateWeekNumber > 13)]
-    return PTDataFrame(hotel)
+    return DFrame(hotel)
 
 def hotel_test():
     return hotel_test_orig().drop(columns='IsCanceled')
@@ -158,7 +158,7 @@ def iris():
     iris=load_iris()
     df = pd.DataFrame(data=np.c_[iris['data'], iris['target']],
                       columns= iris['feature_names'] + ['target'])
-    return PTDataFrame(df)
+    return DFrame(df)
 
 def bank_marketing():
     return read_csv("https://github.com/llhthinker/MachineLearningLab/raw/master/UCI%20Bank%20Marketing%20Data%20Set/data/bank-additional/bank-additional-full.csv", filename='bank_marketing.csv', sep=';')
@@ -189,7 +189,7 @@ def flight_passengers():
     import seaborn as sns
     df = sns.load_dataset('flights')
     #df['month'] = df.month.map({'Jan':0, 'Feb':1, 'Mar':2, 'Apr':3, 'May':4, 'Jun':5, 'Jul':6, 'Aug':7, 'Sep':8, 'Oct':9, 'Nov':10, 'Dec':11}).astype(np.float32)
-    return PTDataFrame(df)
+    return DFrame(df)
 
 def rossmann():
     def read():
@@ -203,11 +203,11 @@ def california():
 def flights():
     df = sns.load_dataset('flights')
     df['month'] = df.month.map({'Jan':0, 'Feb':1, 'Mar':2, 'Apr':3, 'May':4, 'Jun':5, 'Jul':6, 'Aug':7, 'Sep':8, 'Oct':9, 'Nov':10, 'Dec':11}).astype(np.float32)
-    return PTDataFrame(df)
+    return DFrame(df)
 
 def nyse50(**kwargs):
     df = pd.read_csv('/data/datasets/nyse-top50.csv', **kwargs)
-    return PTDataFrame(df)
+    return DFrame(df)
     
 def housing_prices_kaggle_train(**kwargs):
     return read_csv_file('/data/datasets/housing_prices_advanced/train.csv', **kwargs)
@@ -218,12 +218,12 @@ def housing_prices_kaggle_test(**kwargs):
 def housing_prices_kaggle(**kwargs):
     train = read_csv_file('/data/datasets/housing_prices_advanced/train.csv', **kwargs)
     test = read_csv_file('/data/datasets/housing_prices_advanced/test.csv', **kwargs)
-    return PTDataFrame.from_train_test(train, test)
+    return DFrame.from_train_test(train, test)
 
 def heart_disease_kaggle(**kwargs):
     train = read_csv_file('/data/datasets/mlms1/train.csv', **kwargs)
     test = read_csv_file('/data/datasets/mlms1/test_set.csv', **kwargs)
-    return PTDataFrame.from_train_test(train, test)
+    return DFrame.from_train_test(train, test)
     
 def occupancy():
     """
@@ -247,7 +247,7 @@ def occupancy():
     train = read_pd_csv('occupancy_train.csv', alternativesource=partial(read, 2))
     valid = read_pd_csv('occupancy_valid.csv', alternativesource=partial(read, 0))
     #test = read_pd_csv('occupancy_test.csv', alternativesource=partial(read, 1))
-    return PTDataFrame.from_dfs(train, valid)
+    return DFrame.from_dfs(train, valid)
 
 def ag_news(language='basic_english', min_freq=1, collate='pad'):
     from torchtext.datasets import AG_NEWS

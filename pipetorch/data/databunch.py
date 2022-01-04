@@ -5,7 +5,14 @@ from torch.utils.data import DataLoader
 from ..evaluate.evaluate import Evaluator
 
 class Databunch:
-    def __init__(self, df, train_ds, valid_ds=None, test_ds=None, batch_size=32, valid_batch_size=None, num_workers=0, shuffle=True, pin_memory=False, balance=False, collate=None):
+    """
+    Following the idea of databunches from the Fast.ai library, 
+    a Databunch is a convenient wrapper for a train and valid DataLoader in one object.
+    This makes it less redundant to configure the dataloaders and ensures that the dataloaders for
+    DFrame are always paired.
+    """
+    
+    def __init__(self, df, train_ds, valid_ds=None, test_ds=None, batch_size=32, valid_batch_size=None, num_workers=2, shuffle=True, pin_memory=False, balance=False, collate=None):
         self.df = df
         self.train_ds = train_ds
         self.valid_ds = valid_ds
@@ -143,15 +150,14 @@ class Databunch:
             self._num_workers = value
             self.reset()
     
-    def inverse_transform_y(self, y):
-        return self.df.inverse_transform_y(y)
+    def inverse_scale_y(self, y):
+        return self.df.inverse_scale_y(y)
     
-    def inverse_transform(self, X, y, y_pred, cum=None):
-        return self.df.inverse_transform(X, y, y_pred, cum=cum)
+    def inverse_scale(self, X, y, y_pred, cum=None):
+        return self.df.inverse_scale(X, y, y_pred, cum=cum)
     
     def from_numpy(self, X):
         X = self.df.from_numpy(X)
-        
     
     def predict(self, model, dl, device=None):
         import torch
@@ -167,7 +173,7 @@ class Databunch:
             if device is not None:
                 X = [ x.to(device) for x in X ]
             y_pred = model(*X)
-            df = self.inverse_transform(*X, y, y_pred, df)
+            df = self.inverse_scale(*X, y, y_pred, df)
         torch.set_grad_enabled(prev)
         return df
     
@@ -212,3 +218,38 @@ class Databunch:
     
     def to_evaluator(self, *metrics):
         return Evaluator(self.df, *metrics)
+    
+    def df_to_dset(self, df):
+        """
+        Converts a DataFrame to a DSet that has the pipeline as this DataBunch.
+        
+        Arguments:
+            df: DataFrame
+        
+        Returns: DSet
+        """
+        return self.df.df_to_dset(df)
+
+    def df_to_dataset(self, df):
+        """
+        Converts the given df to a DataSet using the pipeline of this DataBunch.
+        
+        Arguments:
+            df: DataFrame or DFrame
+                to convert into a DataSet
+        
+        returns: DataSet.
+        """
+        return self.df.df_to_dset(df).to_dataset()
+    
+    def df_to_dataloader(self, df):
+        """
+        Converts the given df to a DataLoader using the pipeline of this DataBunch.
+        
+        Arguments:
+            df: DataFrame or DFrame
+                to convert into a DataSet
+        
+        returns: DataSet.
+        """
+        return self._dataloader(self.df_to_dataset(df))    

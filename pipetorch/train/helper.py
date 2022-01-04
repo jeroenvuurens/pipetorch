@@ -3,35 +3,12 @@ import os
 import matplotlib
 from matplotlib import pyplot as plt
 import matplotlib.patheffects as PathEffects
-from IPython.core import pylabtools as pt
-from pathlib2 import Path
+# from IPython.core import pylabtools as pt
+from pathlib import Path
 from sklearn.manifold import TSNE
 import seaborn as sns
 import numpy as np
 import sys
-from IPython import get_ipython
-ipython = get_ipython()
-back2gui = { b:g for g, b in pt.backends.items() }
-
-class plt_gui:
-    def __init__(self, gui):
-        self.gui = gui
-
-    def __enter__(self):
-        backend = matplotlib.get_backend()
-        self.old_gui = back2gui[backend]
-        ipython.magic('matplotlib ' + self.gui)
-
-    def __exit__(self, *args):
-        ipython.magic('matplotlib ' + self.old_gui)
-
-class plt_inline(plt_gui):
-    def __init__(self):
-        super().__init__('inline')
-
-class plt_notebook(plt_gui):
-    def __init__(self):
-        super().__init__('notebook')
 
 def getsizeof(o, ids=set()):
     d = deep_getsizeof
@@ -54,84 +31,102 @@ def getsizeof(o, ids=set()):
 
 class Plot:
     def __init__(self, xlabel=None, ylabel='Loss', xscale=None, yscale='log', **kwargs):
-        self.figure = plt.figure()
-        self.ax = self.figure.add_subplot(111)
-        self.figure.show()
         self.xlabel = xlabel
         self.ylabel = ylabel
         self.xscale = xscale
         self.yscale = yscale
+        self.interactive = matplotlib.get_backend() == 'nbAgg'
+        if self.interactive:
+            self.figure = plt.figure()
+            self.ax = self.figure.gca()
+            self.figure.show()
 
     def __enter__(self):
-        plt.ion()
+        if self.interactive:
+            plt.ion()
         return self
 
     def __exit__(self, *args):
-        plt.ioff()
+        if self.interactive:
+            plt.ioff()
+        else:
+            self.figure = plt.figure()
+            self.ax = self.figure.gca()
+            if self.xlabel:
+                self.ax.set_xlabel(self.xlabel)
+            if self.ylabel:
+                self.ax.set_ylabel(self.ylabel)
+            if self.xscale:
+                self.ax.set_xscale(self.xscale)
+            if self.yscale:
+                self.ax.set_yscale(self.yscale)
+            try:
+                self.ax.plot( self.x, self.y)
+                self.set_ylim(self.y)
+            except:
+                try:
+                    for name, y in self.yy.items():
+                        self.ax.plot( self.x, y, label=str(name))
+                    self.set_ylim_multi(self.yy)
+                except: pass
+            self.figure.show()
 
     def set_ylim(self, y):
         y = np.array(y)
-        while True:
-            mean_y = np.mean(y)
-            sd_y = np.std(y)
-            keep = (y >= mean_y - 4 * sd_y) & (y <= mean_y + 4 * sd_y)
-            if sum(keep) == len(y):
-                break
-            y = y[keep]
-        if min(y) < max(y):
-            self.ax.set_ylim(max(y) - (max(y) - min(y)) * 1.1, min(y) + (max(y) - min(y)))
+        min_y = min(y)
+        first_y = y[0]
+        max_y = min(max(y), 4 * (first_y - min_y) + min_y)
+        if min_y < max_y:
+            self.ylim = max(0.1, max_y - (max_y - min_y) * 1.1), min_y + (max_y - min_y)
+            self.ax.set_ylim(self.ylim)
 
     def set_ylim_multi(self, yy):
-        min_y = None
-        max_y = None
-        for y in yy.values():
-            y = np.array(y)
-            while True:
-                mean_y = np.mean(y)
-                sd_y = np.std(y)
-                keep = (y >= mean_y - 3 * sd_y) & (y <= mean_y + 3 * sd_y)
-                if sum(keep) == len(y):
-                    break
-                y = y[keep]
-            if min_y is not None:
-                min_y = min(min_y, min(y))
-                max_y = max(max_y, max(y))
-            else:
-                min_y = min(y)
-                max_y = max(y)
+        min_y = min([ min(y) for y in yy.values() ])
+        first_y = max([y[0] for y in yy.values() ])
+        max_y = max([max(y) for y in yy.values() ])
+        max_y = min(max_y, 4 * (first_y - min_y) + min_y)
         if min_y < max_y:
-            self.ax.set_ylim(max_y - (max_y - min_y) * 1.05, min_y + (max_y - min_y)*1.05)
+            self.ylim = max(0.1, max_y - (max_y - min_y) * 1.1), min_y + (max_y - min_y)
+            self.ax.set_ylim(self.ylim)
 
     def replot(self, x, y):
-        self.ax.clear()
-        if self.xlabel:
-            self.ax.set_xlabel(self.xlabel)
-        if self.ylabel:
-            self.ax.set_ylabel(self.ylabel)
-        if self.xscale:
-            self.ax.set_xscale(self.xscale)
-        if self.yscale:
-            self.ax.set_yscale(self.yscale)
-        self.set_ylim(y)
-        self.ax.plot( x, y)
-        plt.show()
-        self.figure.canvas.draw()
+        if self.interactive:
+            self.ax.clear()
+            if self.xlabel:
+                self.ax.set_xlabel(self.xlabel)
+            if self.ylabel:
+                self.ax.set_ylabel(self.ylabel)
+            if self.xscale:
+                self.ax.set_xscale(self.xscale)
+            if self.yscale:
+                self.ax.set_yscale(self.yscale)
+            self.set_ylim(y)
+            self.ax.plot( x, y)
+            plt.show()
+            self.figure.canvas.draw()
+        else:
+            self.x = x
+            self.y = y
 
     def multiplot(self, x, yy):
-        self.ax.clear()
-        if self.xlabel:
-            self.ax.set_xlabel(self.xlabel)
-        if self.ylabel:
-            self.ax.set_ylabel(self.ylabel)
-        if self.xscale:
-            self.ax.set_xscale(self.xscale)
-        if self.yscale:
-            self.ax.set_yscale(self.yscale)
-        self.set_ylim_multi(yy)
-        for name, y in yy.items():
-            self.ax.plot( x, y, label=str(name))
-        self.ax.legend()
-        self.figure.canvas.draw()
+        if self.interactive:
+            self.ax.clear()
+            if self.xlabel:
+                self.ax.set_xlabel(self.xlabel)
+            if self.ylabel:
+                self.ax.set_ylabel(self.ylabel)
+            if self.xscale:
+                self.ax.set_xscale(self.xscale)
+            if self.yscale:
+                self.ax.set_yscale(self.yscale)
+            self.set_ylim_multi(yy)
+            for name, y in yy.items():
+                self.ax.plot( x, y, label=str(name))
+            self.ax.legend()
+            self.figure.canvas.draw()
+        else:
+            self.x = x
+            self.yy = yy
 
 def to_numpy(arr):
     if type(arr) is torch.Tensor:

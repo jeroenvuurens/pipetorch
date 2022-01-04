@@ -7,7 +7,6 @@ from operator import itemgetter
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import cm
 from .evaluateresults import EvaluatorResults
-from ..data.ptdataset import PTDS
 from collections.abc import Iterable
 
 class Evaluator:
@@ -272,15 +271,18 @@ class Evaluator:
         ax.plot_surface(xx, yy, l, cmap=cmap, linewidth=linewidth, antialiased=antialiased)
         plt.xlabel(r'$\theta_0$')
         plt.ylabel(r'$\theta_1$')
+        plt.show()
         
     def _figure(self, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, interpolate=0, df=None):
         return _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
     
     def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='best', **kwargs):
+        #fig = plt.figure()
         f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
         pltfunction(f.graph_x, f.graph_y, marker=marker, **kwargs)
         if 'label' in kwargs:
-            plt.legend(loc=loc)
+            plt.gca().legend(loc=loc)
+        #fig.show()
     
     def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', **kwargs):
         self._plot(plt.plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, sort=True, df=df, loc=loc, **kwargs)
@@ -347,7 +349,6 @@ class _figure(_figures):
             plt.title(title)
         plt.ylabel(self.ylabel) 
         plt.xlabel(self.xlabel)
-
 
     @property
     def x(self):

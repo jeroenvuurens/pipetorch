@@ -16,23 +16,7 @@ from .tuner import *
 from .helper import nonondict
 from functools import partial
 import os
-try:
-    GPU = int(os.environ['GPU'])
-    GPU = 0
-except:
-    GPU = -1
     
-# def last_container(last):
-#     try:
-#         l = last_container(last.children())
-#         if l is not None:
-#             return l
-#     except: pass
-#     try:
-#         if len(last._modules) > 0 and next(reversed(last._modules.values())).out_features > 0:
-#             return last
-#     except: pass
-
 def to_numpy(arr):
     try:
         return arr.data.cpu().numpy()
@@ -41,18 +25,6 @@ def to_numpy(arr):
         return arr.to_numpy()
     except: pass
     return arr
-
-# class DLModel(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-
-#     def set_last_linear(self, out_features):
-#         container = self.last_container()
-#         name, last = container._modules.popitem()
-#         container.add_module(name, nn.Linear(last.in_features, out_features))
-
-#     def last_container(self):
-#         return last_container(self)
 
 def UniformLR(*args, **kwargs):
     class Uniform_Scheduler:
@@ -145,15 +117,24 @@ class trainer:
             An evaluator that was created by a different trainer or 
             DataFrame, to combine the results of different training
             sessions.
+            
+        debug: bool (False)
+            stores X, y and y_pred in properties so that they can be inspected
+            when an error is thrown.
     """
     
-    def __init__(self, model, loss, *data, metrics = [], optimizer=AdamW, optimizerparams=None, random_state=None, scheduler=None, weight_decay=None, momentum=None, gpu=False, evaluator=None, **kwargs):
+    def __init__(self, model, loss, *data, metrics = [], 
+                 optimizer=AdamW, optimizerparams=None, 
+                 random_state=None, scheduler=None, weight_decay=None, 
+                 momentum=None, gpu=False, evaluator=None, 
+                 debug=False, **kwargs):
         self.report_frequency = 1
         self.loss = loss
         self.random_state = random_state
         self.gpu(gpu)
         self.set_data(*data)
         self._model = model
+        self._debug = debug
         try:
             self.post_forward = model.post_forward
         except: pass
@@ -580,25 +561,6 @@ class trainer:
             del self._scheduler
         except: pass
         self._scheduler_class = value
-
-#     @property
-#     def out_features(self):
-#         try:
-#             return self._out_features
-#         except: pass
-#         try:
-#             self._out_features = last_container(self.model).out_features
-#             return self._out_features
-#         except:
-#             print('cannot infer out_features from the model, please specify it in the constructor of the trainer')
-#             raise
-
-#     @property
-#     def in_features(self):
-#         first = next(iter(self._model.modules()))
-#         while type(first) is nn.Sequential:
-#             first = next(iter(first.modules()))
-#         return first.in_features
     
     @property
     def valid_ds(self):
@@ -714,6 +676,10 @@ class trainer:
             the model.
         """
         X = [ x.to(self.model.device) for x in X ]
+        if self._debug:
+            self.lastx = X
+            self.lastyfw = self.model(*X)
+            return self.lastyfw
         return self.model(*X)
        
     def predict(self, *X):
@@ -752,7 +718,9 @@ class trainer:
         """
         post_forward = getattr(self.model, "post_forward", None)
         if callable(post_forward):
-            return self.model.post_forward(y)
+            y = self.model.post_forward(y)
+            if self._debug:
+                self.lastypfw = y
         return y
 
     def list_commits(self):
@@ -929,7 +897,7 @@ class trainer:
         else:
             print(f'commit point {label} not found')
 
-    def _loss_xy(self, *X, y=None):
+    def _loss_xy(self, *X, y=None, debug=False):
         """
         Computes predictions for the given X.
         
@@ -944,6 +912,8 @@ class trainer:
             and a tensor with the predicted values
         """
         assert y is not None, 'Call _loss_xy with y=None'
+        if self._debug:
+            self.lasty = y
         y_pred = self.forward(*X)
         return self.loss(y_pred, y), self.post_forward(y_pred)
     
@@ -964,6 +934,8 @@ class trainer:
         losses = []
         leny = 0
         for *X, y in dl:
+            if self._debug:
+                self.lasty = y
             y_pred = self.forward(*X)
             l = self.loss(y_pred, y)
             losses.append(l.item() * len(y))
@@ -1205,6 +1177,21 @@ class trainer:
         """
         self.checkout('lowest')
 
+    def debug(self):
+        if self._debug:
+            try:
+                print('last X', self.lastx)
+            except: pass
+            try:
+                print('last y', self.lasty)
+            except: pass
+            try:
+                print('last model(y)', self.lastyfw)
+            except: pass
+            try:
+                print('last post_forward(model(y))', self.lastypfw)
+            except: pass
+        
     def learning_curve(self, y='loss', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
         """
         Plot a learning curve with the train and valid loss on the y-axis over the epoch on the x-axis. 
