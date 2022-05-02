@@ -57,7 +57,7 @@ class MultiLayerPerceptron(nn.Module):
 
 class MultiLayerPerceptron_BinaryClass(MultiLayerPerceptron):
     def __init__(self, *width, preprocess=identity, inner_activation=nn.ReLU(), drop_prob=None):
-        super().__init__(*width, preprocess=preprocess, inner_activation=inner_activation, drop_prob=drop_prob, last_activation=nn.nn.Sigmoid())
+        super().__init__(*width, preprocess=preprocess, inner_activation=inner_activation, drop_prob=drop_prob, last_activation=nn.Sigmoid())
 
     def post_forward(self, y):
         return (y > 0.5).float()
@@ -115,3 +115,4 @@ class factorization(nn.Module):
         user = X[:,0] - 1
         item = X[:,1] - 1
         return (self.user_factors(user) * self.item_factors(item)).sum(1) + self.user_bias(user).squeeze() + self.item_bias(item).squeeze()
+

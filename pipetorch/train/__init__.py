@@ -1,4 +1,5 @@
-from .trainer import trainer, to_numpy
+from .trainer import Trainer, to_numpy
+from .study import Study
 import torch
 from torch import nn
 from torch.optim import *

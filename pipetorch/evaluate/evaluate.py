@@ -13,7 +13,7 @@ class Evaluator:
     def __init__(self, df, *metrics):
         self.df = df
         self.metrics = metrics
-        self.results = EvaluatorResults.from_evaluator(self)
+        self.reset()   # create a fresh set of results
     
     def append(self, evaluator):
         r = copy.copy(self)
@@ -96,8 +96,78 @@ class Evaluator:
             d = { key:([value] if isinstance(value, Iterable) else value) for key,value in d.items() }
             r.append( pd.DataFrame(d, index=[0]))
         return pd.concat(r, axis=1)
-
-    def run(self, train, predict, model=None, df=None, n_splits=1, **annot):
+    
+    def reset(self):
+        self.results = EvaluatorResults.from_evaluator(self)
+    
+    def optimum(self, *targets, direction=None, directions=None, validation=None, test=None, select=None):
+        """
+        Finds the optimal value in a training trial, i.e. where the given `optimize` value over the validation
+        set is optimal. The optimize metric must be among the metrics that are cached.
+        
+        When there are multiple target metrics, ties on the first metric are resolved by the second, etc. 
+        
+        Arguments:
+            *targets: str
+                one or more target metrics that are used to find the optimum
+                if empty, all recorded metrics are used in the order they were registered (usually loss first)
+            direction: str ('minimize')
+                'minimize' or 'maximize' to return the resp. lowest or highest score on the validation set
+            directions: [ str ] ('minimize')
+                for multi-target training
+            validation, test: 
+                for internal use, allows recursive calls to resolve finding a multi-target optimum
+        
+        Returns:
+            { metric:value }
+            A dictionary of values obtained over the cached metrics on the validation set
+        """
+        
+        if validation is None:
+            validation = self._select(select).valid
+        if test is None:
+            test = self._select(select).test if 'test' in self.results.phase.unique() else validation
+        if len(targets) == 0:
+            return self.optimum(*self.metrics, direction=direction, directions=directions, validation=validation, test=test)
+        if directions is None and direction is None:
+            return self.optimum(*targets, directions=[ 'minimize' if t == 'loss' else 'maximize' for t in targets ], validation=validation, test=test)
+        if direction is not None:
+            assert directions is None, 'You can only use direction or directions'
+            return self.optimum(*targets, directions=[ direction ], validation=validation, test=test)
+        for t in targets:
+            assert t in validation.metric.unique(), f'target {t} must be a cached metric'
+        m = validation[validation.metric == targets[0]]
+        if directions[0] == 'minimize':
+            optimum = m.value.min()
+        elif directions[0] == 'maximize':
+            optimum = m.value.max()
+        else:
+            assert False, 'direction must be minimize or maximize'
+        epochs = m.epoch[m.value == optimum]
+        test = test[test.epoch.isin(epochs)]
+        if len(epochs) > 1 and len(targets) > 1:
+            validation = validation[validation.epoch.isin(epochs)]
+            return self.optimum( *target[1:], directions=directions[1:], validation=validation, test=test)
+        elif len(epochs) > 1:
+            test = test.loc[test.epoch == epochs[0]]
+        return {t:test.value[test.metric == t].item() for t in targets }
+    
+    def train_valid_sklearn(self, df):
+            model.fit(df.train_X, df.train_y)
+            valid_pred = df.valid._predict(predict)
+            valid_y = df._inverse_transform_y( df.valid_y )
+            valid_pred = df._inverse_transform_y( valid_pred )
+            metrics = self.compute_metrics(valid_y, valid_pred)
+            for k, v in metrics.items():
+                results_valid[k] += v * len(df.valid_X) / len(df)
+            train_pred = dfk.train._predict(predict)
+            y = dfk._inverse_transform_y( y )
+            y_pred = dfk._inverse_transform_y( y_pred )
+            metrics = self.compute_metrics(y, y_pred)
+            for k, v in metrics.items():
+                results_train[k] += v  * len(dfk.train_X) / len(df)
+    
+    def run(self, train, predict, model=None, df=None, n_splits=1, stratify=None, **annot):
         if df is None:
             df = self.df
         if n_splits == 1:
@@ -107,26 +177,27 @@ class Evaluator:
         else:
             results_train = defaultdict(lambda:0)
             results_valid = defaultdict(lambda:0)
-            for dfk in df.kfold(n_splits=n_splits):
+            for dfk in df.kfold(n_splits=n_splits, stratify=stratify):
                 train(dfk.train_X, dfk.train_y)
                 y_pred = dfk.valid._predict(predict)
                 y = dfk._inverse_transform_y( y )
                 y_pred = dfk._inverse_transform_y( y_pred )
                 metrics = self.compute_metrics(y, y_pred)
                 for k, v in metrics.items():
-                    results_valid[k] += v / n_splits
+                    results_valid[k] += v * len(dfk.valid_X) / len(df)
                 y_pred = dfk.train._predict(predict)
                 y = dfk._inverse_transform_y( y )
                 y_pred = dfk._inverse_transform_y( y_pred )
                 metrics = self.compute_metrics(y, y_pred)
                 for k, v in metrics.items():
-                    results_train[k] += v / n_splits
+                    results_train[k] += v  * len(dfk.train_X) / len(df)
             results_train['phase'] = 'train'
             results_valid['phase'] = 'valid'
             self.results = self.results._add(self._dict_to_df(train_results, annot))
             self.results = self.results._add(self._dict_to_df(valid_results, annot))
             
     def run_sklearn(self, model, df=None, **annot):
+            
         self.run(model.fit, model.predict, model=model, df=df, **annot)
 
     def _inverse_transform_y(self, df, y):
@@ -138,13 +209,18 @@ class Evaluator:
         y_pred = df._predict(predict)
         self._store(df.y, y_pred, df=df, **annot)        
         
-    def _store(self, y, y_pred, df=None, **annot):
+    def _store_metrics(self, y, y_pred, df=None, **annot):
         if df is None:
             df = self.df
         y = self._inverse_transform_y( df, y )
         y_pred = self._inverse_transform_y( df, y_pred )
         metrics = self.compute_metrics(y, y_pred)
-        self.results = self.results._add(self._dict_to_df(metrics, annot))
+        for m, value in metrics.items():
+            self._store_metric(m, value, **annot)
+        return metrics
+
+    def _store_metric(self, metric, value, **annot):
+        self.results = self.results._add(self._dict_to_df({'metric':metric, 'value': value}, annot))
             
     def score_train(self, predict, df=None, **annot):
         if df is None:
@@ -299,6 +375,10 @@ class Evaluator:
             s = select
         elif type(select) is str:
             s = self.results[self.results.phase == select]
+        elif type(select) == dict:
+            s = self.results
+            for key, value in select.items():
+                s = s.loc[s[key] == value].copy()
         else:
             raise ValueError('Unknown type passed for select')
         return s
@@ -307,19 +387,25 @@ class Evaluator:
         for g, d in selection.groupby(by=series):
             yield g, self.results._copy_meta(d)
     
-    def scatter_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+    def scatter_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+        y = y or self.metrics[0].__name__
         selection = self._select(select)
+        selection = selection[selection.metric == y]
+        ylabel = ylabel or y
         unique_groups = self._unique(selection, series)
         for g, d in self._groups(selection, series=series):
             g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
-            d.scatter(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=g, **kwargs)
+            d.scatter(x, y='value', xlabel=xlabel, ylabel=y, title=title, label=g, **kwargs)
     
-    def line_metric(self, x, series='phase', select=None, y=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+    def line_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+        y = y or self.metrics[0].__name__
         selection = self._select(select)
+        selection = selection[selection.metric == y]
+        ylabel = ylabel or y
         unique_groups = len([ a for a in self._groups(selection, series=series) ])
         for g, d in self._groups(selection, series=series):
             g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
-            d.line(x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label=g, **kwargs)
+            d.line(x, y='value', xlabel=xlabel, ylabel=ylabel, title=title, label=g, **kwargs)
         
 class _figures:
     def _graph_coords_callable(self, df, f):

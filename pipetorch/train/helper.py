@@ -9,6 +9,8 @@ from sklearn.manifold import TSNE
 import seaborn as sns
 import numpy as np
 import sys
+import math
+from tqdm.notebook import tqdm
 
 def getsizeof(o, ids=set()):
     d = deep_getsizeof
@@ -127,6 +129,98 @@ class Plot:
         else:
             self.x = x
             self.yy = yy
+
+class tqdm_trainer(tqdm):
+    """
+    Extends tqdm for the PipeTorch Trainer. Typically, this is called with the number of epochs, cycle and 
+    dataloaders that are used for training and 
+    
+    Arguments:
+        epochs: int
+            the number of epochs to train
+        cycle: int
+            the cycle configures after how many epochs the validation is run and reported
+        train_dl: PyTorch DataLoader
+            the dataloader that is used for training
+        valid_dl: PyTorch DataLoader
+            the dataloader that is used for validation
+    """
+    def __init__(self, epochs, cycle, train_dl, valid_dl, test_dl=None, folds=1, silent=False, iterable=None, desc='Total', total=None, leave=False):
+        self.train_dl = train_dl
+        self.valid_dl = valid_dl
+        self.test_dl = test_dl
+        self.epochs = epochs
+        self.cycle = cycle
+        self.folds = folds
+        self.reportsleft = self._reports(epochs, cycle)
+        self.batches_per_fold = self._batches(epochs, self.reportsleft, train_dl, valid_dl, test_dl)
+        self.silent = silent
+        if not silent:
+            super().__init__(desc=desc, total=self.folds * self.batches_per_fold, leave=leave)
+
+    @property
+    def batches_left(self):
+        try:
+            return self._batches_left
+        except:
+            self._batches_left = self.batches_per_fold
+            return self._batches_left
+        
+    @batches_left.setter
+    def batches_left(self, value):
+        self._batches_left = value
+            
+    def update(self, size):
+        self.batches_left -= size
+        if not self.silent:
+            super().update(size)
+    
+    def finish_fold(self):
+        self.total -= self.batches_left
+        del self._batches_left
+        if not self.silent:
+            self.refresh()
+    
+    def close(self):
+        if not self.silent:
+            super().close()
+            
+    @classmethod
+    def _reports(self, epochs, cycle):
+        """
+        Arguments:
+            epochs: int
+                the number of epochs to train
+            cycle: int
+                the cycle configures after how many epochs the validation is run and reported
+           
+        Returns: int - the number of times validation is run and reported
+        """
+        return math.ceil(epochs / cycle)
+    
+    @classmethod
+    def _batches(self, epochs, reports, train_dl, valid_dl, test_dl=None):
+        """
+        Arguments:
+            epochs: int
+                the number of epochs to train
+            reports: int
+                the number of times validation is run and reported
+            train_dl: PyTorch DataLoader
+                the dataloader that is used for training
+            valid_dl: PyTorch DataLoader
+                the dataloader that is used for validation
+            test_dl: PyTorch DataLoader
+                the dataloader that is used for testing
+
+        Returns: int - the total number of batches that is processed
+        """
+        
+        batches = len(train_dl) * train_dl.batch_size * epochs
+        batches += len(valid_dl) * valid_dl.batch_size * reports
+        if test_dl is not None:
+            batches += len(test_dl) * test_dl.batch_size * reports
+        return batches
 
 def to_numpy(arr):
     if type(arr) is torch.Tensor:

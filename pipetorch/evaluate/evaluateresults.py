@@ -24,6 +24,9 @@ class EvaluatorResults(pd.DataFrame):
             setattr(df, m, getattr(self, m))
         return df
     
+    def clone(self):
+        return copy.copy(self)
+    
     def __finalize__(self, other, method=None, **kwargs):
         for name in self._metadata:
             object.__setattr__(self, name, getattr(other, name, None))
@@ -43,19 +46,19 @@ class EvaluatorResults(pd.DataFrame):
 
     @property
     def train(self):
-        r = self[self.phase == 'train']
+        r = self.loc[self.phase == 'train'].copy()
         r._phase = 'train'
         return r
     
     @property
     def valid(self):
-        r = self[self.phase == 'valid']
+        r = self.loc[self.phase == 'valid'].copy()
         r._phase = 'valid'
         return r
     
     @property
     def test(self):
-        r = self[self.phase == 'test']
+        r = self.loc[self.phase == 'test'].copy()
         r.phase = 'test'
         return r
 

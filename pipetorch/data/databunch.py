@@ -69,6 +69,19 @@ class Databunch:
             del self._test_dl
         except: pass
 
+    @property
+    def folds(self):
+        return self.df._pt_folds
+        
+    def iter_folds(self):
+        if self.folds is None:
+            yield self.train_dl, self.valid_dl, self.test_dl
+        else:
+            for fold in range(self.folds):
+                db = self.df.fold(fold).to_databunch(batch_size=self.batch_size, num_workers=self.num_workers, 
+                                                   shuffle=self.shuffle, pin_memory=self.pin_memory, balance=self.balance)
+                yield db.train_dl, db.valid_dl, db.test_dl
+
     def _weighted_sampler(self, weights):
         import torch
         from torch.utils.data import WeightedRandomSampler

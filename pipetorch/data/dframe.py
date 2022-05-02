@@ -2,11 +2,13 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures, OneHotEncoder
 from sklearn.utils import resample
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split, StratifiedKFold, StratifiedShuffleSplit
+from iterstrat.ml_stratifiers import MultilabelStratifiedKFold, MultilabelStratifiedShuffleSplit
 import matplotlib.pyplot as plt
 import copy
 import math
 import time
+import random
 import warnings
 import linecache
 from ..evaluate.evaluate import Evaluator
@@ -44,11 +46,15 @@ class _DFrame:
     _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', 
                  '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', 
                  '_pt_dummies', '_pt_sequence_window', '_pt_sequence_shift_y', 
-                 '_pt_shuffle', '_pt_split', '_pt_random_state', '_pt_balance', 
-                 '_pt_len', '_pt_indices', '_pt_train_valid_indices', '_pt_test_indices',
+                 '_pt_split_shuffle', '_pt_split_stratify', '_pt_split_random_state', 
+                 '_pt_folds_shuffle', '_pt_folds_stratify', '_pt_folds_random_state', 
+                 '_pt_valid_size', '_pt_test_size', '_pt_balance', 
+                 '_pt_train_valid_indices', '_pt_valid_indices', '_pt_test_indices',
+                 '_pt_indices_before_testsplit', '_pt_indices_after_testsplit',
+                 '_pt_folds', '_pt_fold', '_pt_created_folds', 
                  '_pt_dataset', '_pt_transforms', '_pt_train_transforms']
 
-    _locked_names = ['_pt__locked_indices', '_pt__locked_train_indices', 
+    _locked_names = [  '_pt__locked_train_indices', 
                        '_pt__locked_valid_indices', '_pt__locked_test_indices',
                        '_pt__locked_train', '_pt__locked_valid', 
                        '_pt__locked_scalerx', '_pt__locked_scalery',
@@ -79,6 +85,7 @@ class _DFrame:
         for m in self._metadata:
             self.__setattr__(m, None)
             self._pt_transposey = False
+            self._pt_fold = 0
             try:
                 self.__setattr__(m, getattr(data, m))
             except: pass
@@ -90,7 +97,6 @@ class _DFrame:
             
     def _copy_indices(self, r):
         if self.is_locked:
-            r._pt__locked_indices = self._pt__locked_indices
             r._pt__locked_train_indices = self._pt__locked_train_indices
             r._pt__locked_valid_indices = self._pt__locked_valid_indices
             r._pt__locked_test_indices = self._pt__locked_test_indices
@@ -112,7 +118,7 @@ class _DFrame:
     @property
     def is_locked(self):
         try:
-            return self._pt__locked_indices is not None
+            return self._pt__locked_train_indices is not None
         except:
             return False
     
@@ -125,9 +131,8 @@ class _DFrame:
             a copy of the DFrame for which the sampled indices are locked
         """
         if not self.is_locked:
-            self._pt__locked_indices = self._indices
-            self._pt__locked_train_indices = self._train_indices
             self._pt__locked_valid_indices = self._valid_indices
+            self._pt__locked_train_indices = self._train_indices
             self._pt__locked_test_indices = self._test_indices
     
     @property
@@ -307,83 +312,115 @@ class _DFrame:
     def _sequence_index_y(self):
         return self._sequence_window+self._shift_y-1
     
+    def _indices_notnull(self):
+        if self._pt_sequence_window is not None:
+            def a(w):
+                return np.all(w)
+
+            indicesy = np.where(self[self._columny].notnull().all(1))[0]
+            indicesx = self[self._columnx].notnull().all(1)[::-1].rolling(self._pt_sequence_window).apply(a, raw=True, engine='numba')[::-1].index
+            indicesy = set(indicesy - (self._pt_sequence_window + self._pt_sequence_shift_y - 1))
+            return np.array([ i for i in indicesx if i in indicesy ])
+        else:
+            return np.array(np.where(self[self._all_columns].notnull().all(1))[0])
+    
     @property
     def _indices_unshuffled(self):
-        if self._pt_sequence_window is not None:
-            try:
-                self._pt_train_valid_indices = [ i for i in self._pt_train_valid_indices if i in self.index ]
-                indices = self._pt_train_valid_indices[:-(self._pt_sequence_window + self._pt_sequence_shift_y - 1)]
-            except:
-                indices = list(range(len(self) - (self._pt_sequence_window + self._pt_sequence_shift_y - 1)))
-            return indices
-        else:
-            try:
-                return [ i for i in self._pt_train_valid_indices if i in self.index ]
-            except:
-                return np.where(self[self._all_columns].notnull().all(1))[0]
+        try:
+            return np.array([ i for i in self._pt_train_valid_indices if i in set(self._indices_notnull()) ])
+        except:
+            return self._indices_notnull()
 
+    @property
+    def _indices_before_testsplit(self):
+        try:
+            if self._pt_indices_before_testsplit is not None:
+                return self._pt_indices_before_testsplit
+        except: pass
+        try:
+            test_indices = set(self._test_indices)
+            self._pt_indices_before_testsplit = np.array([ i for i in self._indices_unshuffled if i not in test_indices ])
+        except:
+            self._pt_indices_before_testsplit = self._indices_unshuffled
+        return self._pt_indices_before_testsplit
+           
+    @property
+    def _indices_after_testsplit(self):
+        try:
+            if self._pt_indices_after_testsplit is not None:
+                return self._pt_indices_after_testsplit
+        except: pass
+        test_indices = set(self._test_indices)
+        self._pt_indices_after_testsplit = np.array([ i for i in self._indices_before_testsplit if i not in test_indices ])
+        return self._pt_indices_after_testsplit
+
+    @property
+    def _test_size(self):
+        return self._pt_test_size or 0
+    
+    @property
+    def _valid_size(self):
+        return self._pt_valid_size or 0
+    
     @property
     def _shuffle(self):
-        return ((self._pt_shuffle is None and self._pt_split is not None) or self._pt_shuffle) and \
-               self._pt_sequence_window is None
-        
-    def _check_len(self):
-        """
-        Internal method, to check if then length changed, to keep the split between the train/valid/test
-        unless the length changed to obtain stable results
-        """
-        try:
-            if self._pt_len == len(self._pt_indices):
-                return True
-        except: pass
-        return False
-
-    @property
-    def _indices(self):
-        try:
-            if self._pt__locked_indices:
-                return self._pt__locked_indices
-        except: pass
-        try:
-            if self._check_len():
-                return self._pt_indices
-        except: pass
-        self._pt_indices = self._indices_unshuffled
-        self._pt_len = len(self._pt_indices)
-        if self._shuffle:
-            if self._pt_random_state is not None:
-                np.random.seed(self._pt_random_state)
-            np.random.shuffle(self._pt_indices)
-        return self._pt_indices
+        return ((self._pt_split_shuffle is None and \
+                (self._test_size > 0 or self._valid_size > 0)) \
+                or self._pt_split_shuffle) and self._pt_sequence_window is None
         
     @property
-    def _valid_begin(self):
+    def _test_indices(self):
         try:
-            return int((1 - sum(self._pt_split))* len(self._indices))
-        except: 
-            try:
-                return int((1 - self._pt_split)* len(self._indices))
-            except:
-                return len(self._indices)
-        
-    @property
-    def _test_begin(self):
+            if self._pt__locked_test_indices:
+                return self._pt__locked_test_indices
+        except: pass
         try:
-            return int((1 - self._pt_split[1])* len(self._indices))
-        except:
-            return len(self._indices)
-
+            if self._pt_test_indices is not None:
+                return self._pt_test_indices
+        except: pass
+        try:
+            del self._pt_valid_indices
+        except: pass
+        try:
+            del self._pt_train_indices
+        except: pass
+        self._pt_test_indices = []
+        if self._pt_folds is not None and self._test_size == 1:
+            self._pt_test_indices = self._test_fold(self._pt_fold)
+        elif self._test_size > 0:
+            if self._pt_split_stratify is None:
+                if self._split_shuffle:
+                    _, self._pt_test_indices = train_test_split(self._indices_before_testsplit, test_size=self._test_size, random_state=self._pt_split_random_state)
+                    self._pt_test_indices = sorted(self._pt_test_indices)
+                else:
+                    test_size = int(self._test_size * len(self._indices_before_testsplit))
+                    self._pt_test_indices = self._indices_before_testsplit[-test_size:]
+            else:
+                if len(self._pt_split_stratify) > 1:
+                    splitter = MultilabelStratifiedShuffleSplit(n_splits=1, 
+                                                       random_state=self._pt_split_random_state, 
+                                                       test_size=self._test_size)
+                else:
+                    splitter = StratifiedShuffleSplit(n_splits=1, 
+                                                       random_state=self._pt_split_random_state, 
+                                                       test_size=self._test_size) 
+                target = self.iloc[self._indices_before_testsplit][self._pt_split_stratify]
+                _, self._pt_test_indices = next(splitter.split(target, target))
+                self._pt_test_indices = sorted(self._pt_test_indices)
+                    
+        return self._pt_test_indices
+    
     @property
     def _train_indices_unbalanced(self):
-        return self._indices[:self._valid_begin]
+        return sorted(set(self._indices_after_testsplit) - set(self._valid_indices))
 
     def _pseudo_choose(self, indices, items):
-        r = indices[:items % len(indices)]
-        while items >= len(indices):
-            r = np.hstack([r, indices])
-            items -= len(indices)
+        if self._pt_split_random_state is not None:
+            random.seed(self._pt_split_random_state)
+        r = np.array(random.sample(indices, items % len(indices)))
+        r = np.hstack([indices] * (items // len(indices)) + [r])
         return r
-    
+
     @property
     def _train_indices(self):
         try:
@@ -409,23 +446,124 @@ class _DFrame:
     @property
     def _valid_indices(self):
         try:
-            if self._pt__locked_valid_indices:
+            if self._pt__locked_valid_indices is not None:
                 return self._pt__locked_valid_indices
         except: pass
-        return self._indices[self._valid_begin:self._test_begin]
+        try:
+            if self._pt_valid_indices is not None:
+                return self._pt_valid_indices
+        except: pass
+        try:
+            del self._pt_train_indices
+        except: pass
+        self._pt_valid_indices = []
+        if self._pt_folds is not None:
+            self._pt_valid_indices = self._valid_fold(self._pt_fold)
+        elif self._valid_size > 0:
+            if self._test_size < 1:
+                valid_size = self._valid_size / (1 - self._test_size)
+            else:
+                valid_size = self._valid_size
+            if valid_size > 0:
+                if self._pt_split_stratify is None:
+                    if self._shuffle:
+                        _, self._pt_valid_indices = train_test_split(self._indices_after_testsplit, test_size=valid_size, random_state=self._pt_split_random_state)
+                        self._pt_valid_indices = sorted(self._pt_valid_indices)
+                    else:
+                        valid_size = int(valid_size * len(self._indices_before_testsplit))
+                        self._pt_valid_indices = self._indices_after_testsplit[-valid_size:]                        
+                else:
+                    if len(self._pt_split_stratify) > 1:
+                        splitter = MultilabelStratifiedShuffleSplit(n_splits=1, 
+                                                           random_state=self._pt_split_random_state, 
+                                                           test_size=self._test_size)
+                    else:
+                        splitter = StratifiedShuffleSplit(n_splits=1, 
+                                                           random_state=self._pt_split_random_state, 
+                                                           test_size=self._test_size) 
+                    target = self.loc[self._indices_after_testsplit, self._pt_split_stratify]
+                    _, self._pt_valid_indices = next(splitter.split(target, target))
+                    self._pt_valid_indices = sorted(self._pt_valid_indices)
+        elif self._pt_folds is not None:
+            self._pt_valid_indices = self._valid_fold(self._pt_fold)
+        return self._pt_valid_indices
 
     @property
-    def _test_indices(self):
+    def _folds(self):
         try:
-            if self._pt__locked_test_indices:
-                return self._pt__locked_test_indices
+            if self._pt_created_folds is not None:
+                return self._pt_created_folds
         except: pass
-        try:
-            if self._pt_test_indices is not None:
-                return self._pt_test_indices
-        except: pass
-        return self._indices[self._test_begin:]
-
+        assert self._pt_folds is not None and type(self._pt_folds) == int, 'You have to set split(folds) to an integer'
+        assert self._pt_folds > 1, 'You have to set split(folds) to an integer > 1'
+        self._pt_created_folds = []
+        if 0 < self._test_size < 1:
+            indices = self._indices_after_testsplit
+        else:
+            indices = self._indices_before_testsplit
+        if self._pt_folds_stratify is None:
+            target = self.iloc[indices]
+            splitter = KFold(n_splits = self._pt_folds, shuffle=self._pt_folds_shuffle, random_state=self._pt_folds_random_state)
+            for train_indices, valid_indices in splitter.split(target, target):
+                self._pt_created_folds.append(sorted(indices[valid_indices]))
+        else:
+            if len(self._pt_folds_stratify) > 1:
+                splitter = MultilabelStratifiedKFold(n_splits = self._pt_folds,
+                                    shuffle=True,
+                                    random_state=self._pt_folds_random_state)
+            else:
+                splitter = StratifiedKFold(n_splits = self._pt_folds,
+                                    shuffle=True,
+                                    random_state=self._pt_folds_random_state)
+            target = self.loc[indices, self._pt_folds_stratify]
+            for train_indices, valid_indices in splitter.split(target, target):
+                self._pt_created_folds.append(sorted(indices[valid_indices]))
+        return self._pt_created_folds
+    
+    def _test_fold(self, i):
+        test_fold = (i + 1 + (i // self._pt_folds % (self._pt_folds - 1))) % self._pt_folds
+        return self._folds[test_fold]
+    
+    def _valid_fold(self, i):
+        return self._folds[i]
+    
+    def fold(self, i):
+        """
+        Utilize n-fold cross validation by first calling `folds(n)` and then calling `fold(i)` to obtain 
+        a DFrame in which cross validation is set up using the fold (i) as the validation set, 
+        another fold as the test set and the remainder as the training set.
+        
+        Arguments:
+            i: int
+                the fold to use as the validation set
+        
+        returns: copy of the PipeTorch DataFrame
+            In this copy, the train, valid and test sets are shifted to fold n
+        """
+        self._folds
+        r = copy.copy(self)
+        i = i % r._pt_folds
+        r._pt_fold = i
+        if self._test_size == 1:  # choose a fold
+            r._pt_test_indices = r._test_fold(i)
+            r._pt_valid_indices = r._valid_fold(i)
+            #r._pt_train_indices = np.hstack([ f for f in self._folds if f != r._pt_test_indices and f != r._pt_valid_indices ])
+        else:
+            r._pt_valid_indices = r._valid_fold(i)
+            #r._pt_train_indices = np.hstack([ f for f in self._folds if f != r._pt_valid_indices ])
+        return r
+    
+    def iterfolds(self):
+        """
+        Iterate over the folds for n-fold cross validation. 
+        
+        Yields:
+            train, valid (DSet)
+        """
+        r = self.fold(0)
+        for i in range(r._pt_folds):
+            yield r.fold(i)
+    
     def df_to_dataset(self, df):
         """
         Converts the given df to a DataSet using the pipeline of this DFrame.
@@ -436,8 +574,8 @@ class _DFrame:
         
         returns: Converts the given df to a DataSet.
         """
-        assert self.is_locked, 'You can only use a locked DFrame, to prevent inconsistencies in the transformation'
-        return r.df_to_dset(df).to_dataset()
+        #assert self.is_locked, 'You can only use a locked DFrame, to prevent inconsistencies in the transformation'
+        return self.df_to_dset(df).to_dataset()
         
     def to_datasets(self, dataset=None):
         """
@@ -468,7 +606,7 @@ class _DFrame:
         
         Returns: DSet
         """
-        assert self.is_locked, 'You can only use a locked DFrame, to prevent inconsistencies in the transformation'
+        #assert self.is_locked, 'You can only use a locked DFrame, to prevent inconsistencies in the transformation'
         return self._dset(df, range(len(df)))
         
     def to_databunch(self, dataset=None, batch_size=32, num_workers=0, shuffle=True, pin_memory=False, balance=False):
@@ -480,21 +618,24 @@ class _DFrame:
                          batch_size=batch_size, num_workers=num_workers, shuffle=shuffle, 
                          pin_memory=pin_memory, balance=balance)    
 
-    def kfold(self, n_splits=5):
-        """
-        Prepare the PipeTorch DataFrame for k-fold cross validation.
-        n_splits: the number of folds
-        return: a sequence of k PipeTorch DataFrames across which every item is used in the validation set once
-        and the training splits and validation splits are disjoint.
-        """
-        kf = KFold(n_splits=n_splits)
-        for train_ind, valid_ind in kf.split(self._train_indices):
-            r = copy.copy(self)
-            r._train_indices = self._train_indices[train_ind]
-            r._valid_indices = self._train_indices[valid_ind]
-            yield r
-    
     def evaluate(self, *metrics):
+        """
+        Creates a PipeTorch Evaluator, that can be used to visualize the data, the results
+        of a model or cache learning/validation diagnostics. Since datasets are often
+        reused in repeated experiments, every call will create a new Evaluator to prevent
+        mixing results from different experiments. If you do want to compare results from
+        multiple experiments, create a single evaluator and reuse that for the experiments
+        that you wish to compare.
+        
+        Arguments:
+            *metrics: callable
+                One or more functions, that will take y_true, y_pred as parameter to
+                compute an evaluation metric. Typically, functions from SKLearn.metrics 
+                can be used.
+        
+        returns: Evaluator
+        """
+        
         self.lock()
         return Evaluator(self, *metrics)
    
@@ -774,27 +915,95 @@ class _DFrame:
         r._pt_bias = True
         return r
     
-    def split(self, split=0.2, shuffle=True, random_state=None):
+    def reshuffle(self, random_state=None):
         """
-        Split the data in a train/valid/(test) set.
-        The train and valid sets will be resampled.
+        Resamples the train, valid and test set with the existing settings.
         
         Arguments:
-            split: the fraction that is used for the validation set (and optionally test set). 
-                When a single digit is given (default 0.2), that fraction of rows in the DataFrame will be 
-                used for the validation set and the remainder for the training set. When a tuple of 
-                fractions is given, those fractions of rows will be assigned to a validation and test set.
-            shuffle: shuffle the rows before splitting
-            random_state: set a random_state for reproducible results
+            random_state: int (None)
+                set a random_state for reproducible results   
+                
+        Returns: copy of DFrame 
+            schedules the rows to be split into a train, valid and (optionally) test set.
+        """
+        r = copy.copy(self)
+        r._pt_split_random_state = random_state
+        return r
+        
+    def split(self, valid_size=None, test_size=None, shuffle=None, random_state=None, stratify=None):
+        """
+        Split the data in a train/valid/(test) set.
+        
+        Arguments:
+            valid_size: float (None)
+                the fraction of the dataset that is used for the validation set.
+            test_size: float (None)
+                the fraction of the dataset that is used for the test set. When combined with folds
+                if 1 > test_size > 0, the test set is split before the remainder is divided in folds 
+                to apply n-fold cross validation.
+            shuffle: bool (None)
+                shuffle the rows before splitting. None means True unless sequence() is called to process
+                the data as a (time) series.
+            random_state: int (None)
+                set a random_state for reproducible results
+            stratify: str or [ str ] (None)
+                apply stratified sampling. Per value for the given column, the rows are sampled. When a list
+                of columns is given, multi-label stratification is applied.
             
         Returns: copy of DFrame 
             schedules the rows to be split into a train, valid and (optionally) test set.
         """
-        assert not self.is_locked, 'You cannot change the pipeline of a Locked DFrame'
         r = copy.copy(self)
-        r._pt_split = split
-        r._pt_shuffle = shuffle
-        r._pt_random_state = random_state
+        r._pt_valid_size = valid_size
+        r._pt_test_size = test_size
+        r._pt_split_shuffle = shuffle
+        r._pt_split_random_state = random_state
+        r._pt_split_stratify = [stratify] if type(stratify) == str else stratify
+        return r
+    
+    def folds(self, folds=5, shuffle=True, random_state=None, stratify=None, test=None):
+        """
+        Divide the data in folds to setup n-Fold Cross Validation in a reproducible manner. 
+        
+        By combining folds() with split(0 < test_size < 1) , a single testset is split before 
+        dividing the remainder in folds that are used for training and validation. 
+        When used without split, by default a single fold is used for testing.
+        
+        The folds assigned to the validation and test-set rotate differently, 
+        giving 5x4 combinations for 5-fold cross validation. You can access all 20 combinations
+        by calling fold(0) through fold(19).
+                
+        Arguments:
+            folds: int (None)
+                The number of times the data will be split in preparation for n-fold cross validation. The
+                different splits can be used through the fold(n) method.
+                SKLearn's SplitShuffle is used, therefore no guarantee is given that the splits are
+                different nor that the validation splits are disjoint. For large datasets, that should not
+                be a problem.
+            shuffle: bool (None)
+                shuffle the rows before splitting. None means True unless sequence() is called to process
+                the data as a (time) series.
+            random_state: int (None)
+                set a random_state for reproducible results
+            stratify: str or [ str ] (None)
+                apply stratified sampling. Per value for the given column, the rows are sampled. When a list
+                of columns is given, multi-label stratification is applied.
+            test: bool (None)
+                whether to use one fold as a test set. The default None is interpreted as True when
+                split is not used. Often for automated n-fold cross validation studies, the validation set
+                is used for early termination, and therefore you should use an out-of-sample
+                test set that was not used for optimizing.
+            
+        Returns: copy of DFrame 
+            schedules the data to be split in folds.
+        """
+        r = copy.copy(self)
+        r._pt_folds = folds
+        r._pt_folds_shuffle = shuffle
+        r._pt_folds_random_state = random_state
+        r._pt_folds_stratify = [stratify] if type(stratify) == str else stratify
+        if test or (r._pt_test_size is None and test is None):
+            r._pt_test_size = 1
         return r
         
     def polynomials(self, degree, include_bias=False):
@@ -979,7 +1188,13 @@ class _DFrame:
     
     def transforms(self, *transforms):
         """
-        Configure a (list of) transformation function(s) that is called from the DataSet class to prepare the data.
+        Configure a (list of) transformation function(s) that is called when retrieving
+        items from PipeTorch' TransformableDataSet class to prepare the data. These function allow
+        to configure a pipeline for data augmentation that is used to train PyTorch models.
+        For example, to train of images or audio fragments that are read from disk.
+        
+        Note that these transformations are not used to prepare Numpy Arrays, and the DataSet class has
+        to call the tranformations (which the TransformableDataSet class does that is used by default).
 
         Arguments:
             *transforms: [ callable ]
@@ -991,8 +1206,11 @@ class _DFrame:
 
     def _train_transformation_parameters(self, train_dset):
         """
-        Placeholder to extend DFrame to train transformations on the train DSet. This is used by
-        ImageDFrame to normalize images and TextDFrame to tokenize text.
+        Placeholder to extend DFrame to configure transformations that are applied on the train DataSet,
+        but not on the validation or test set. This is used by
+        ImageDFrame to learn normalization parameters for images and to learn a vocabulary 
+        for TextDFrame to tokenize text.
+        
         Note that the mechanism assumes that the train DSet is generated first.
         
         Arguments: 
@@ -1026,7 +1244,7 @@ class _DFrame:
             post: bool (True) - whether to include post transformations
             
         Returns: [ callable ]
-            A list of transformations that is applied to the generated train DataSet 
+            A list of transformations that is applied to the generated DSet 
         """
         t = []
         try:
@@ -1045,6 +1263,51 @@ class _DFrame:
                 t.extend( self._post_transforms() )
         except: pass
         return t
+    
+    def inspect(self):
+        """
+        Describe the data in the DFrame, specifically by reporting per column 
+        - Datatype 
+        - Missing: number and percetage of 'Missing' values
+        - Range: numeric types, are described as a range [min, max]
+                  and for non-numeric types the #number of unique values is given
+        - Values: the two most frequently occuring values (most frequent first).
+        """
+
+        missing_count = self.isnull().sum() # the count of missing values
+        value_count = self.isnull().count() # the count of all values
+        missing_percentage = round(missing_count / value_count * 100,2) #the percentage of missing values
+
+        datatypes = self.dtypes
+
+        df = pd.DataFrame({
+            'Missing (#)': missing_count, 
+            'Missing (%)': missing_percentage,
+            'Datatype': datatypes
+        }) #create a dataframe
+        df = df.sort_values(by=['Missing (#)'], ascending=False)
+
+        value_col = []
+        range_col = []
+        for index, row in df.iterrows():
+            u = self[index].value_counts().index.tolist()
+            if pd.api.types.is_numeric_dtype(row['Datatype']):
+                _range = f"[{self[index].min()}, {self[index].max()}]"
+            else:
+                _range = f"#{len(u)}"
+            if len(u) == 1:
+                _values = f'({u})'
+            elif len(u) == 2:
+                _values = f'({u[0]}, {u[1]})'
+            elif len(u) > 2:
+                _values = f'({u[0]}, {u[1]}, ...)'
+            else:
+                _values = ''
+            range_col.append(_range)
+            value_col.append(_values)
+        df["Range"] = range_col
+        df["Values"] = value_col
+        return df
     
 class DFrame(pd.DataFrame, _DFrame):
     _metadata = _DFrame._metadata
@@ -1132,18 +1395,18 @@ class GroupedDFrame(DataFrameGroupBy, _DFrame):
         """
         see: pipetorch.DFrame.astype
         """
-        DFrame.astype(self, dtype, copy=copy, errors=errors)
+        return DFrame.astype(self, dtype, copy=copy, errors=errors)
 
     def get_group(self, namel, obj=None):
         return self._dframe( super().get_group(name, obj=obj) )
         
     def __iter__(self):
-        for group, sub0set in super().__iter__():
+        for group, subset in super().__iter__():
             yield group, self._copy_meta(subset)
         
     def to_dataset(self):
         """
-        Convert 0a grouped DFrame into a PyTorch ConcatDataset over datasets
+        Convert a grouped DFrame into a PyTorch ConcatDataset over datasets
         for every group contained.
         
         returns: train, valid, test DataSet
@@ -1151,6 +1414,6 @@ class GroupedDFrame(DataFrameGroupBy, _DFrame):
         from torch.utils.data import ConcatDataset
         dss = []
         for key, group in self:
-            dss.append( self._dframe(group).to_dataset())
+            dss.append( self.df_to_dataset(group) )
 
         return [ConcatDataset(ds) for ds in zip(*dss)]

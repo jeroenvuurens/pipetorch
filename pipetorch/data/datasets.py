@@ -130,6 +130,13 @@ def boston_housing_prices():
     #df['PRICE'] = boston['target']
     return read_csv('boston.scv', alternativesource=read)
 
+def hotel_full():
+    df = read_csv('/data/datasets/hotel_bookings.csv', na_values=['NULL'])
+    df = df.sort_values(by=['arrival_date_year', 'arrival_date_week_number'])
+    df = df.drop(columns=['reservation_status', 'reservation_status_date'])
+    df = df[[ c for c in df if c != 'is_canceled'] + ['is_canceled']]
+    return DFrame(df)
+
 def hotel():
     df = read_csv('/data/datasets/hotel.csv', na_values=['NULL'], skipinitialspace=True)
     df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
@@ -137,6 +144,7 @@ def hotel():
     df = df[[ c for c in df if c != 'IsCanceled'] + ['IsCanceled']]
     train = df[(df.ArrivalDateYear < 2017) | (df.ArrivalDateWeekNumber < 14)]
     return DFrame(train)
+
 
 def hotel_test_orig():
     df = read_csv('/data/datasets/hotel.csv', na_values=['NULL'], skipinitialspace=True)
@@ -224,6 +232,10 @@ def heart_disease_kaggle(**kwargs):
     train = read_csv_file('/data/datasets/mlms1/train.csv', **kwargs)
     test = read_csv_file('/data/datasets/mlms1/test_set.csv', **kwargs)
     return DFrame.from_train_test(train, test)
+    
+def speeddate(**kwargs):
+    df = read_csv_file('/data/datasets/Speed Dating.csv', **kwargs)
+    return DFrame(df)
     
 def occupancy():
     """
