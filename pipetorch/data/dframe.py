@@ -479,11 +479,11 @@ class _DFrame:
                     if len(self._pt_split_stratify) > 1:
                         splitter = MultilabelStratifiedShuffleSplit(n_splits=1, 
                                                            random_state=self._pt_split_random_state, 
-                                                           test_size=self._test_size)
+                                                           test_size=valid_size)
                     else:
                         splitter = StratifiedShuffleSplit(n_splits=1, 
                                                            random_state=self._pt_split_random_state, 
-                                                           test_size=self._test_size) 
+                                                           test_size=valid_size) 
                     target = self.loc[self._indices_after_testsplit, self._pt_split_stratify]
                     _, self._pt_valid_indices = next(splitter.split(target, target))
                     self._pt_valid_indices = sorted(self._pt_valid_indices)
@@ -536,15 +536,20 @@ class _DFrame:
         a DFrame in which cross validation is set up using the fold (i) as the validation set, 
         another fold as the test set and the remainder as the training set.
         
+        A first call will trigger rows to be assigned to the train, valid and test part, which are stored
+        in place to reproduce the exact same split for consecutive calls. The call will however return
+        a copy of the DataFrame in which the requested fold is selected.
+
         Arguments:
             i: int
                 the fold to use as the validation set
         
-        returns: copy of the PipeTorch DataFrame
+        Returns: copy of the PipeTorch DataFrame
             In this copy, the train, valid and test sets are shifted to fold n
         """
         self._folds
         r = copy.copy(self)
+        
         i = i % r._pt_folds
         r._pt_fold = i
         if self._test_size == 1:  # choose a fold
@@ -559,6 +564,9 @@ class _DFrame:
     def iterfolds(self):
         """
         Iterate over the folds for n-fold cross validation. 
+        
+        A first call will trigger rows to be assigned to the train, valid and test part, which are stored
+        in place to reproduce the exact same split for consecutive calls.
         
         Yields:
             train, valid (DSet)
@@ -582,9 +590,12 @@ class _DFrame:
         
     def to_datasets(self, dataset=None):
         """
-        Locks the DFrame (for a consistent split) and 
-        returns a list with a train, valid and (optionally) test DataSet. 
+        Prepares the train, valid and (optionally) test subsets as a DSet, which can be used to complete 
+        the data preparation.
         
+        A first call will trigger rows to be assigned to the train, valid and test part, which are stored
+        in place to reproduce the exact same split for consecutive calls.
+
         Arguments:
             dataset: class (None)
                 The DataSet class to use
@@ -614,8 +625,13 @@ class _DFrame:
         
     def to_databunch(self, dataset=None, batch_size=32, num_workers=0, shuffle=True, pin_memory=False, balance=False):
         """
-        returns: a Databunch that contains dataloaders for the train, valid and test part.
-        batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor
+        Prepare the data as a Databunch that contains dataloaders for the train, valid and test part.
+        batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor.
+        
+        A first call will trigger rows to be assigned to the train, valid and test part, which are stored
+        in place to reproduce the exact same split for consecutive calls.
+
+        Returns: Databunch
         """
         return Databunch(self, *self.to_datasets(dataset=dataset), 
                          batch_size=batch_size, num_workers=num_workers, shuffle=shuffle, 
@@ -671,11 +687,13 @@ class _DFrame:
     @property
     def train(self):
         """
-        Returns or creates a DSet and optionally trains transformation parameters, e.g. for image
+        Prepares the train subset as a DSet and optionally trains transformation parameters, e.g. for image
         normalization or text tokenization. Transformations are only supported for PyTorch DataSets.
         
+        A first call will trigger rows to be assigned to the train, valid and test part, which are stored
+        in place to reproduce the exact same split for consecutive calls.
+        
         Returns: DSet
-            with the train subset of the DFrame
         """
         try:
             if self.is_locked:
@@ -762,9 +780,11 @@ class _DFrame:
 
     def add_column(self, y, indices, erase_y=True, columns=None):
         """
-        Adds a column with values for the target variable to the DataFrame. When applicable, the transformation
-        for the target variable is automatically inverted. This is useful to evaluate or visualize
-        results.
+        Intended for internal use. Adds a column with values for the target variable to the DataFrame. 
+        When applicable, the transformation for the target variable is automatically inverted. 
+        This is useful to evaluate or visualize results.
+        
+        This effect is not inplace, but configured to a copy that is returned. 
         
         Arguments:
             y: Numpy/PyTorch array
@@ -773,8 +793,7 @@ class _DFrame:
             erase_y: bool (True)
                 whether the original target variable is removed 
         
-        Returns: copy of DFrame 
-            to which y is added 
+        Returns: DFrame 
         """
         df_y = self.inverse_scale_y(y)
         r = copy.deepcopy(self)
@@ -823,12 +842,15 @@ class _DFrame:
         Arguments:
             X: Numpy array or PyTorch tensor 
                 with the same format as input features that were generated by the DataFrame
+                
             y: Numpy array or PyTorch tensor
                 with the same format as the target variable that was generated by the
                 DataFrame
+                
             pred_y (optional): Numpy array or PyTorch tensor
                 with the same format as the target variable that was generated by the
                 DataFrame
+                
             cum (optional): DSet
                 an dataset to add the results to, 
                 to accumulate predictions over several mini-batches.
@@ -855,6 +877,8 @@ class _DFrame:
         Oversamples rows in the training set, so that the values of the target variable 
         are better balanced. Does not affect the valid/test set.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
             weights: True or dict
                 when set to True, the target values of the training set are 
@@ -862,8 +886,7 @@ class _DFrame:
                 otherwise a dictionary can be passed that map target values to the 
                 desired fraction of the training set (e.g. {0:0.4, 1:0.6}).
         
-        Returns: copy of DFrame
-            schdules to balance the train set
+        Returns: DFrame
         """
         r = self._copy_with_indices()
         try:
@@ -874,19 +897,23 @@ class _DFrame:
   
     def scale(self, columns=True, scalertype=StandardScaler, omit_interval=(-2,2)):
         """
-        Scales the features and target variable in the DataFrame.
+        Scales the features and target variable in the DataFrame. A scaler is fitted on the
+        train data and applied to train, valid and test.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
             columns: True, str or list of str (True)
                 the columns to scale (True for all)
-            scalertype: an SKLearn type scaler (StandardScaler)
+                
+            scalertype: a SKLearn type scaler (StandardScaler)
+                the scaler class that is used
+            
             omit_interval: (-2,2) when colums is set to True
-                all columns whose values lie outside the omit_interval,
-        
-        Return: copy of DFrame
-            schedules scaling the indicated columns, 
-            using a scaler that is fitted om the training set
-            and applied to train, valid and test set.
+                features whose values lie within this interval are not scaled, the default value
+                ensures that binary values will not be scaled.
+                
+        Return: DFrame
         """
         if self._pt_polynomials and columns != 'x_only':
             assert type(columns) != list or len(columns) == 0, 'You cannot combine polynomials with column specific scaling'
@@ -898,24 +925,30 @@ class _DFrame:
     
     def scalex(self, scalertype=StandardScaler, omit_interval=(-2,2)):
         """
-        Scale all input features.
+        Scale all input features. A scaler is fitted on the
+        train data and applied to train, valid and test.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
-            scalertype: SKLearn scaler class (StandardScaler)
-            omit_interval: (-2,2) features whose values lie within this interval are not scaled
+            scalertype: a SKLearn scaler class (StandardScaler)
+                the scaler class that is used
+                
+            omit_interval: tupple (-2,2) 
+                features whose values lie within this interval are not scaled, the default value
+                ensures that binary values will not be scaled.
         
-        Returns: copy of DFrame 
-            schedules all input features (with values outside omit_interval)
-            to be scaled (see scale)
+        Returns: DFrame 
         """
         return self.scale(columns='x_only', scalertype=scalertype, omit_interval=omit_interval)
     
     def add_bias(self):
         """
-        Adds a bias column in the pipeline.
+        Adds a bias column of value 1 to generated inputs.
         
-        Returns: copy of DFrame
-            schedules as bias column of 1's to be added to the input
+        This effect is not inplace, but configured to a copy that is returned. 
+
+        Returns: DFrame
         """
         r = self._copy_with_indices()
         r._pt_bias = True
@@ -925,20 +958,48 @@ class _DFrame:
         """
         Resamples the train, valid and test set with the existing settings.
         
+        This effect is not inplace, but applied to a copy that is returned. 
+
         Arguments:
             random_state: int (None)
                 set a random_state for reproducible results   
                 
-        Returns: copy of DFrame 
-            schedules the rows to be split into a train, valid and (optionally) test set.
+        Returns: DFrame
+        """
+        r = self.reset_indices()
+        r._pt_split_random_state = random_state
+        return r
+        
+    def reset_indices(self):
+        """
+        Clears the currently sampled split() and folds(), which is stored whenever data preparation
+        is called. Therefore, resampling the split or fold on the next call to data preparation.
+        However, this call will not reset a random_state, use reshuffle() for that.
+        
+        This effect is not inplace, but applied to a copy that is returned. 
+        
+        Returns: DFrame
         """
         r = copy.copy(self)
-        r._pt_split_random_state = random_state
+        try:
+            del r._pt_train_indices
+        except: pass
+        try:
+            del r._pt_valid_indices
+        except: pass
+        try:
+            del r._pt_test_indices
+        except: pass
+        try:
+            del r._pt_created_folds
+        except: pass
         return r
         
     def split(self, valid_size=None, test_size=None, shuffle=None, random_state=None, stratify=None):
         """
-        Split the data in a train/valid/(test) set.
+        Split the data in a train/valid/(test) set. 
+        
+        This effect is not inplace, but applied to a copy that is returned. 
         
         Arguments:
             valid_size: float (None)
@@ -956,10 +1017,9 @@ class _DFrame:
                 apply stratified sampling. Per value for the given column, the rows are sampled. When a list
                 of columns is given, multi-label stratification is applied.
             
-        Returns: copy of DFrame 
-            schedules the rows to be split into a train, valid and (optionally) test set.
+        Returns: DFrame 
         """
-        r = copy.copy(self)
+        r = self.reset_indices()
         r._pt_valid_size = valid_size
         r._pt_test_size = test_size
         r._pt_split_shuffle = shuffle
@@ -978,7 +1038,9 @@ class _DFrame:
         The folds assigned to the validation and test-set rotate differently, 
         giving 5x4 combinations for 5-fold cross validation. You can access all 20 combinations
         by calling fold(0) through fold(19).
-                
+    
+        This effect is not inplace, but applied to a copy that is returned. 
+    
         Arguments:
             folds: int (None)
                 The number of times the data will be split in preparation for n-fold cross validation. The
@@ -1003,7 +1065,7 @@ class _DFrame:
         Returns: copy of DFrame 
             schedules the data to be split in folds.
         """
-        r = copy.copy(self)
+        r = self.reset_indices()
         r._pt_folds = folds
         r._pt_folds_shuffle = shuffle
         r._pt_folds_random_state = random_state
@@ -1016,12 +1078,13 @@ class _DFrame:
         """
         Adds (higher-order) polynomials to the data pipeline.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+        
         Arguments:
             degree: int - degree of the higher order polynomials (e.g. 2 for squared)
             include_bias: bool (False) - whether to generate a bias column
         
-        returns: copy of DFrame 
-            schedules to generate higher order polynomials over the input features.
+        Returns: copy of DFrame 
         """
         assert type(self._pt_scale_columns) != list or len(self._pt_scale_columns) == 0, 'You cannot combine polynomials with column specific scaling'
         r = self._copy_with_indices()
@@ -1033,7 +1096,9 @@ class _DFrame:
         PipeTorch cannot currently handle a dataset without a target variable, 
         however, it can work by simply assigning one of the used input features
         as a target variable.
-        
+
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Returns: copy of DFrame
         """
         r = self._copy_with_indices()
@@ -1044,6 +1109,8 @@ class _DFrame:
         """
         Configures the generated target variable and shape.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
             columns: str or list of str (None)
                 single column name or list of columns that is to be used as target column. 
@@ -1054,8 +1121,6 @@ class _DFrame:
                 can only be chosen when there is at most 1 target variable.
         
         Returns: DFrame 
-            schedules the given column(s) to be used as target columns, 
-            and marks whether the target variable is to converted into a vector.
         """
         
         r = self._copy_with_indices()
@@ -1072,14 +1137,15 @@ class _DFrame:
         target column. 
         Unlocks the DFrame, train and valid sets are therefore resampled.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
             columns: str or list of str
                 columns to be used as input features
             omit: bool (False)
                 when True, all columns are used except the specified target column(s)
         
-        Returns: copy of DFrame
-            schedules the given columns to use as input.
+        Returns: DFrame
         """
         r = self._copy_with_indices()
         if omit:
@@ -1093,12 +1159,13 @@ class _DFrame:
         Converts the values in the targetted columns into indices, for example to use in lookup tables.
         columns that are categorized are excluded from scaling. You cannot use this function together
         with polynomials or bias.
-        Unlocks the DFrame, train and valid sets are therefore resampled.
         
         Note: PipeTorch only uses categories that are in the training set and uses category 0 as
         an unknown category number for categories in the validation and test set that are not known during training.
         This way, no future information is used. 
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
             columns: str or list of str
                 list of columns that is to be converted into a category
@@ -1106,10 +1173,7 @@ class _DFrame:
                 whether the unique values of these colums should be converted 
                 to indices in sorted order.
         
-        Returns: copy of the PipeTorch DataFrame
-            the columns are scheduled for conversion into categories, 
-            by converting every unique value into a unique index starting from 0
-        
+        Returns: DFrame
         """
         assert self._pt_polynomials is None, 'You cannot combine categories with polynomials'
         assert self._pt_bias is None, 'You cannot combine categories with polynomials'
@@ -1123,11 +1187,12 @@ class _DFrame:
         Converts the values in the targetted columns into dummy variables.
         columns that are categorized are excluded from scaling. You cannot use this function together
         with polynomials or bias.
-        Unlocks the DFrame, train and valid sets are therefore resampled.
         
         Note: PipeTorch only uses categories that are in the training set and uses category 0 as
         an unknown category number for categories in the validation and test set that are not known during training.
         This way, no future information is used. 
+        
+        This effect is not inplace, but configured to a copy that is returned. 
         
         Arguments:
             columns: str or list of str
@@ -1136,10 +1201,7 @@ class _DFrame:
                 whether the unique values of these colums should be converted 
                 to indices in sorted order.
         
-        Returns: copy of DFrame 
-            schedules to convert the columns into categories, 
-            for which every unique value is converted into a unique index starting from 0
-        
+        Returns: DFrame 
         """
         assert self._pt_polynomials is None, 'You cannot combine categories with polynomials'
         assert self._pt_bias is None, 'You cannot combine categories with polynomials'
@@ -1158,18 +1220,18 @@ class _DFrame:
         Samples with NaN's are automatically skipped. When DataFrames are grouped, samples will
         be created only within groups.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
-        window: int
-            the number of rows that is used a an input
-        shift_y: int
-            how many rows into the future the target variable is placed, 
-            e.g. with a window=2 and shift_y=1, X0 would contain [x[0], x[1]] 
-            while y0 would contain y[2], 
-            the next sample X1 would be [x[1], x[2]] and y[3].
+            window: int
+                the number of rows that is used a an input
+            shift_y: int
+                how many rows into the future the target variable is placed, 
+                e.g. with a window=2 and shift_y=1, X0 would contain [x[0], x[1]] 
+                while y0 would contain y[2], 
+                the next sample X1 would be [x[1], x[2]] and y[3].
         
-        Returns: copy of DFrame
-            schedules generating samples of sequences, using a sliding window 
-            for learning on sequences
+        Returns: DFrame
         """
         r = self._copy_with_indices()
         r._pt_sequence_window = window
@@ -1181,9 +1243,13 @@ class _DFrame:
         Configure a (list of) transformation function(s) that is called from the DataSet class to prepare the 
         train data.
         
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
             *transforms: [ callable ]
                 (list of) transformation function(s) that is called from the DataSet class to prepare the data.
+
+        Returns: DFrame
         """
         r = self._copy_with_indices()
         r._pt_train_transforms = transforms
@@ -1199,9 +1265,13 @@ class _DFrame:
         Note that these transformations are not used to prepare Numpy Arrays, and the DataSet class has
         to call the tranformations (which the TransformableDataSet class does that is used by default).
 
+        This effect is not inplace, but configured to a copy that is returned. 
+
         Arguments:
             *transforms: [ callable ]
                 (list of) transformation function(s) that is called from the DataSet class to prepare the data.
+                
+        Returns: DFrame
         """
         r = self._copy_with_indices()
         r._pt_transforms = transforms

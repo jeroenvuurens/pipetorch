@@ -468,19 +468,21 @@ class _DSet:
         Converts this DSet into a PyTorch DataLoader.
         
         Arguments: 
-            batch_size: int (32) - batch_size to use
+            batch_size: int (32)
             
-            shuffle: bool (True) - whether to shuffle the data
+            shuffle: bool (True)
             
-            collate_fn: callable (None) - function that is used to construct batches from data points
+            collate_fn: callable (None)
             
-            **kwargs: any named parameter that is passed on to DataLoader
+            **kwargs: dict
+                passed on to DataLoader
         
         returns: DataLoader
             A PyTorch DataLoader over X_tensor and y_tensor
         """
         if collate_fn is not None:
             kwargs['collate_fn'] = collate_fn
+        from torch.utils.data import DataLoader
         return DataLoader(self.to_dataset(), batch_size=batch_size, shuffle=shuffle, **kwargs)
     
     def _predict_y(self, predict):
@@ -528,26 +530,203 @@ class _DSet:
         return self._df.inverse_scale_y(y_pred)
     
     def line(self, x=None, y=None, xlabel = None, ylabel = None, title = None, **kwargs ):
+        """
+        Plots a line graph of this dataset using matplotlib.
+        
+        Args:
+            x: str (None)
+                the column to use on the x-axis. If None, the first input feature is used.
+                
+            y: str, Array or function (None)
+                the column to use in the y-axis. If None, the first target feature is used.
+                You may also pass an array with values (for example model predictions), but these
+                must be paired with the dataset rows. Alernatively, pass a function(X) that is called on X 
+                to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+                and when that fails with a Numpy Array.
+                
+            xlabel: str (None)
+                the label to use on the x-axis. If None, the name of x is used.
+                
+            ylabel: str (none)
+                the label to use on the y-axis. If None, the name of y is used.
+                
+            title: str (None)
+                the title used for the figure
+                
+            kwargs: dict
+                arguments that are passed to plt.plot
+        """
+        
         self._df.evaluate().line(x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, df=self, **kwargs)
     
     def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title = None, **kwargs ):
+        """
+        Plots a scatter graph of this dataset using matplotlib.
+        
+        Args:
+            x: str (None)
+                the column to use on the x-axis. If None, the first input feature is used.
+                
+            y: str, Array or function (None)
+                the column to use in the y-axis. If None, the first target feature is used.
+                You may also pass an array with values (for example model predictions), but these
+                must be paired with the dataset rows. Alernatively, pass a function(X) that is called on X 
+                to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+                and when that fails with a Numpy Array.
+                
+            xlabel: str (None)
+                the label to use on the x-axis. If None, the name of x is used.
+                
+            ylabel: str (none)
+                the label to use on the y-axis. If None, the name of y is used.
+                
+            title: str (None)
+                the title used for the figure
+                
+            kwargs: dict
+                arguments that are passed to plt.plot
+        """
         self._df.evaluate().scatter(x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, df=self, **kwargs)
     
     def scatter2d_class(self, x1=None, x2=None, y=None, xlabel=None, ylabel=None, title=None, loc='upper right', noise=0, **kwargs):
+        """
+        Plots a 2d scatter graph of this dataset using matplotlib. The y-label is used as a class label.
+        
+        Args:
+            x1: str (None)
+                the column to use on the x-axis. If None, the first input feature is used.
+                
+            x2: str (None)
+                the column to use on the x-axis. If None, the second input feature is used.
+                
+            y: str, Array or function (None)
+                the column to use as the series for the plot. If None, the first target feature is used.
+                You may also pass an array with values (for example model predictions), but these
+                must be paired to the dataset rows. Alernatively, pass a function(X) that is called on X 
+                to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+                and when that fails with a Numpy Array.
+                
+            xlabel: str (None)
+                the label to use on the x-axis. If None, the name of x is used.
+                
+            ylabel: str (none)
+                the label to use on the y-axis. If None, the name of y is used.
+                
+            title: str (None)
+                the title used for the figure
+                
+            loc: str ('upper right')
+                passed to plt.legend to place the legend in a certain position
+                
+            noise: 0 (float)
+                transforms s0 that x1 and x2 are incremented with noise multiplied by a random number
+                from their respecrive standard deviation. This allows better visualization of discrete data.
+                
+            kwargs: dict
+                arguments that are passed to plt.plot
+        """
         self._df.evaluate().scatter2d_class(x1=x1, x2=x2, y=y, xlabel=xlabel, ylabel=ylabel, title=title, loc=loc, noise=noise, df=self, **kwargs)
 
     def scatter2d_color(self, x1=None, x2=None, c=None, xlabel=None, ylabel=None, title=None, noise=0, **kwargs):
+        """
+        Plots a 2d scatter graph of this dataset using matplotlib. The y-label is used to color the points.
+        
+        Args:
+            x1: str (None)
+                the column to use on the x-axis. If None, the first input feature is used.
+                
+            x2: str (None)
+                the column to use on the x-axis. If None, the second input feature is used.
+                
+            y: str, Array or function (None)
+                the column to use as the series for the plot. If None, the first target feature is used.
+                You may also pass an array with values (for example model predictions), but these
+                must be paired to the dataset rows. Alernatively, pass a function(X) that is called on X 
+                to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+                and when that fails with a Numpy Array.
+                
+            xlabel: str (None)
+                the label to use on the x-axis. If None, the name of x is used.
+                
+            ylabel: str (none)
+                the label to use on the y-axis. If None, the name of y is used.
+                
+            title: str (None)
+                the title used for the figure
+                
+            loc: str ('upper right')
+                passed to plt.legend to place the legend in a certain position
+                
+            noise: 0 (float)
+                transforms s0 that x1 and x2 are incremented with noise multiplied by a random number
+                from their respecrive standard deviation. This allows better visualization of discrete data.
+                
+            kwargs: dict
+                arguments that are passed to plt.plot
+        """
         self._df.evaluate().scatter2d_color(x1=x1, x2=x2, c=c, xlabel=xlabel, ylabel=ylabel, title=title, noise=noise, df=self, **kwargs)
 
     def scatter2d_size(self, x1=None, x2=None, s=None, xlabel=None, ylabel=None, title=None, noise=0, **kwargs):
+        """
+        Plots a 2d scatter graph of this dataset using matplotlib. The y-label is used as the point size.
+        
+        Args:
+            x1: str (None)
+                the column to use on the x-axis. If None, the first input feature is used.
+                
+            x2: str (None)
+                the column to use on the x-axis. If None, the second input feature is used.
+                
+            y: str, Array or function (None)
+                the column to use as the series for the plot. If None, the first target feature is used.
+                You may also pass an array with values (for example model predictions), but these
+                must be paired to the dataset rows. Alernatively, pass a function(X) that is called on X 
+                to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+                and when that fails with a Numpy Array.
+                
+            xlabel: str (None)
+                the label to use on the x-axis. If None, the name of x is used.
+                
+            ylabel: str (none)
+                the label to use on the y-axis. If None, the name of y is used.
+                
+            title: str (None)
+                the title used for the figure
+                
+            loc: str ('upper right')
+                passed to plt.legend to place the legend in a certain position
+                
+            noise: 0 (float)
+                transforms s0 that x1 and x2 are incremented with noise multiplied by a random number
+                from their respecrive standard deviation. This allows better visualization of discrete data.
+                
+            kwargs: dict
+                arguments that are passed to plt.plot
+        """
         self._df.evaluate().scatter2d_size(x1=x1, x2=x2, s=s, xlabel=xlabel, ylabel=ylabel, title=title, noise=noise, df=self, **kwargs)
 
-    def plot_boundary(self, predict):
-        self._df.evaluate().plot_boundary(predict)
+    def plot_boundary(self, predict, levels=[0.5]):
+        """
+        Plots a decision boundary for classification models that use exactly two input features. 
+        Prior to calling this function, you should already scatter_plot the dataset, beacuse this
+        function uses the minimum and maximum values on the axis to do a grid search. It will then
+        overlay the decision boundary on the existing plot.
         
-    def plot_contour(self, predict):
-        self._df.evaluate().plot_contour(predict)
-
+        Args:
+            predict: function (None)
+                a function(X) that is called to classify an X with two features 
+                PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+                and when that fails with a Numpy Array.
+                
+            levels: [ float ] ([0.5])
+                the levels of the decision boundaries to plot. Pass multiple values or None
+                to generate a contour plot.
+                
+            kwargs: dict
+                arguments that are passed to plt.plot
+        """
+        self._df.evaluate().plot_boundary(predict, levels=levels)
+        
 class DSet(pd.DataFrame, _DSet):
     _metadata = _DSet._metadata
     _internal_names = _DSet._internal_names

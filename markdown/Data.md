@@ -5,9 +5,9 @@ The most common way to prepare data is to use Pandas DataFrame, however, data pr
 The additional functions are divided in:
 - [Data loading](#Data-Loading)
 - [Out-of-sample validation](#Out-of-sample-validation): [split()](#split()) and [folds()](#folds())
-- [Preprocessing](#Data-preprocessing): [scale()](#Scale()), [balance()](#Balance()), [polynomials()](#polynomials()), [category()](#catorgy()], [dummies()](#dummies())
-- [Visualization](#Visualization): e.g. `df.train.scatter`
-- [Data preparation](#Data-preparation): through the `.train_X`, ... , `.valid_y` properties, and `to_datasets()`, `to_dataloader()` and `to_databunch()` methods.
+- [Preprocessing](#Data-preprocessing): [scale()](#Scale()), [balance()](#Balance()), [polynomials()](#polynomials()), [category()](#category()), [dummies()](#dummies())
+- [Visualization](#Visualization): [scatter()](#scatter()), [scatter2d_class()](#scatter2d_class()), [line()](#line()), and [plot_boundary()](#plot_boundary())
+- [Data preparation](#Data-preparation): to [Numpy](#Numpy-Array) or a PyTorch [DataSet](#DataLoader), [DataLoader](#DataLoader) or PipeTorch [Databunch](#DataLoader)
 
 Two important things about the way the PipeTorch data pipeline works:
 - all operations are `lazily executed`; e.g. scaling is not done until the data preparation is called. A dataframe `df` therefore still shows the original data while `df.train_X` shows the result after splitting and scaling.
@@ -19,6 +19,7 @@ We will provide some examples below, for more explanations and advanced options 
 
 ```python
 from pipetorch.data import read_from_kaggle, read_csv, create_kaggle_authentication
+import matplotlib.pyplot as plt
 import numpy as np
 ```
 
@@ -33,27 +34,32 @@ The data pipeline often starts by loading a dataset. The most basic way is to us
 
 Uses pd.read_csv to read a csv from file or url. The difference with Pandas is that a DFrame is returned and it allows downloaded files to be automatically stored with `save=True` in `path / filename`, so that when read_csv is called with the same parameters the stored file is used. The `kwargs` are passed to pd.read_csv. When a (multichar) delimiter is used, this is also used to save the file so that the original delimiter is kept.
 
-*Args:*
-```    
-url: str
-    the url to download or a full path pointing to a .csv file
-filename: str (None)
-    the filename to store the downloaded file under. If None, the filename is extracted from the url.
-path: str (None)
-    the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
-    dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
-save: bool (True)
-    whether to save a downloaded .csv
-**kwargs:
-    additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
-    you will have to set engine='python'.
-```
+``` 
+Args:
 
-*Returns*: DFrame
+    url: str
+        the url to download or a full path pointing to a .csv file
+        
+    filename: str (None)
+        the filename to store the downloaded file under. If None, the filename is extracted from the url.
+        
+    path: str (None)
+        the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+        dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+        
+    save: bool (False)
+        whether to save a downloaded .csv
+        
+    **kwargs:
+        additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+        you will have to set engine='python'.
+
+Returns: DFrame
+```
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download', save=False)
+wine = read_csv('https://osf.io/8fwaj/download')
 wine
 ```
 
@@ -181,49 +187,53 @@ If the dataset is not cached, this functions requires a valid .kaggle/kaggle.jso
 Note: there is a difference between a Kaggle dataset and a Kaggle competition. For the latter, you have to use `read_from_kaggle_competition`.
     
 ```
-Example:
-    read_from_kaggle('uciml/autompg-dataset')
-        to read/download `https://www.kaggle.com/datasets/uciml/autompg-dataset`
-    read_from_kaggle('robmarkcole/occupancy-detection-data-set-uci', 'datatraining.txt', 'datatest.txt')
-        to combine a train and test set in a single DFrame
-```
-    
-```
 Args:
+
     dataset: str
-        the username/dataset part of the kaggle url, e.g. uciml/autompg-dataset     
+        the username/dataset part of the kaggle url, e.g. uciml/autompg-dataset  
+        
     train: str (None)
         the filename that is used as the train set, e.g. 'train.csv'
+
     test: str (None)
-        the filename that is used as the test set, e.g. 'test.csv'
+        the filename that is used as the test set, e.g. 'test.csv'. Although the test set is added to the
+        DFrame, PipeTorch ensures that these rows are assigned to the test set when preparing data and
+        that no test information leaks through the PipeTorch functions (like scale, dummies, etc.)
+        
     shared: bool (False)
         save the dataset in ~/.pipetorch instead of ~/.pipetorchuser, allowing to share downloaded
         files between users.
+        
     force: bool (False)
         when True, the dataset is always downloaded
+        
     **kwargs:
         additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
         you will have to set engine='python'.
 
 Returns: DFrame
 ```
-            
 
+Note: if you want to be able to download yourself, register an account at Kaggle (free), create a token on their website and register the token on your machine in `~/.kaggle/kaggle.json` or through the function below (only tested on Ubuntu).
 
 
 ```python
-# if you want to be able to download yourself, register (free), create and register a token.
 # create_kaggle_authentication('username', 'tokenstring')
 ```
+
+To read/download `https://www.kaggle.com/datasets/uciml/autompg-dataset`
 
 
 ```python
 mpg = read_from_kaggle('uciml/autompg-dataset') 
 ```
 
-### train/test sets
+To read a dataset that has separate train and test set into a single DFrame
 
-It is also possible to combine separate train and test files through `read_from_kaggle(dataset, train, test)` or combine train/test DataFrame through `DFrame.from_train_test()`. The data is then combined in a single DataFrame, but the test data will never leak into training. Any PipeTorch function will only use the train part, thus `split()`, `scale()`, `dummies`, `category`, etc. will only apply/fit on the train part. When data preparation is called, the test data (accessible through `.test`) will be transformed exactly like the train set. This allows you to configure the data processing pipeline for the entire set.
+
+```python
+occupancy = read_from_kaggle('robmarkcole/occupancy-detection-data-set-uci', 'datatraining.txt', 'datatest.txt')
+```
 
 # DataFrame
 
@@ -231,6 +241,7 @@ The returned object is an extension of a Pandas DataFrame (called a DFrame). Thi
 
 
 ```python
+mpg = read_from_kaggle('uciml/autompg-dataset') 
 mpg.drop(columns='cylinders').head(5)
 ```
 
@@ -445,39 +456,33 @@ For Machine Learning, you have to use out-of-sample validation and test sets. Pi
 
 ### folds()
 
-Divide the data in folds to setup n-Fold Cross Validation in a reproducible manner. 
+Divide the data over n folds to setup n-Fold Cross Validation in a reproducible manner. 
         
-By combining folds() with split(0 < test_size < 1) , a single testset is split before 
-dividing the remainder in folds that are used for training and validation. 
-When used without split, by default a single fold is used for testing.
+By combining folds() with split(0 < test_size < 1) , a single testset is split before dividing the remainder in folds that are used for training and validation. When used without split, by default a single fold is used for testing.
 
-The folds assigned to the validation and test-set rotate differently, 
-giving 5x4 combinations for 5-fold cross validation. You can apply exhaustive cross-validation
-over all 20 combinations by calling fold(0) through fold(19), or less exhaustive cross-validation 
-by calling fold(0) through fold(4) to use every fold for validation and testing once. 
+The folds assigned to the validation and test-set rotate differently, giving 5x4 combinations for 5-fold cross validation. You can apply exhaustive cross-validation over all 20 combinations by calling fold(0) through fold(19), or less exhaustive cross-validation by calling fold(0) through fold(4) to use every fold for validation and testing once. 
 
 ```
-Example:
-    df.folds(5)
-        creates 5 equally sized folds. Calls to df.fold(i) will set the train/valid/test sets
-        to one of the permutations over the folds. The sets are generated when data preparation
-        is called, e.g. df.train, df.valid or df.test.
-
 Arguments:
+
     folds: int (None)
         The number of times the data will be split in preparation for n-fold cross validation. The
         different splits can be used through the fold(n) method.
         SKLearn's SplitShuffle is used, therefore no guarantee is given that the splits are
         different nor that the validation splits are disjoint. For large datasets, that should not
         be a problem.
+        
     shuffle: bool (None)
         shuffle the rows before splitting. None means True unless sequence() is called to process
         the data as a (time) series.
+        
     random_state: int (None)
         set a random_state for reproducible results
+        
     stratify: str or [ str ] (None)
-        apply stratified sampling. Per value for the given column, the rows are sampled. When a list
-        of columns is given, multi-label stratification is applied.
+        uses the iterative-stratification library to apply stratified sampling. Per value for the given column,
+        the rows are sampled. When a list of columns is given, multi-label stratification is applied.
+        
     test: bool (None)
         whether to use one fold as a test set. The default None is interpreted as True when
         split is not used. Often for automated n-fold cross validation studies, the validation set
@@ -488,25 +493,31 @@ Returns: copy of DFrame
     schedules the data to be split in folds.
 ```
 
+The example below creates 5 equally sized folds. Calls to df.fold(i) will set the train/valid/test sets to one of the permutations over the folds. The sets are generated when data preparation is called, e.g. df.train, df.valid or df.test. Using folds ensures that no data from the valid/test part is used in training or leaked, and that there is no overlap between resp. the train/test part over the different folds.
+
 
 ```python
+wine = read_csv('https://osf.io/8fwaj/download')
 wine = wine.folds(5)
-print(wine.fold(0).valid.head())
-print(wine.fold(1).valid.head())  # fold(0) - fold(4) all have unique validation examples
+for i in range(5):
+    print(wine.fold(i).valid.head(2))
 ```
 
-        quality    pH  volatile acidity  alcohol
-    9         5  3.35              0.50     10.5
-    11        5  3.35              0.50     10.5
-    19        6  3.04              0.32      9.2
-    24        6  3.43              0.40      9.7
-    28        5  3.47              0.71      9.4
        quality    pH  volatile acidity  alcohol
     1        5  3.20              0.88      9.8
-    2        5  3.26              0.76      9.8
     3        6  3.16              0.28      9.8
-    4        5  3.51              0.70      9.4
+        quality    pH  volatile acidity  alcohol
+    12        5  3.58             0.615      9.9
+    15        5  3.17             0.620      9.2
+       quality    pH  volatile acidity  alcohol
+    0        5  3.51              0.70      9.4
     8        7  3.36              0.58      9.5
+        quality    pH  volatile acidity  alcohol
+    7         7  3.39              0.65     10.0
+    10        5  3.28              0.58      9.2
+       quality    pH  volatile acidity  alcohol
+    2        5  3.26              0.76      9.8
+    4        5  3.51              0.70      9.4
 
 
 ### split() 
@@ -522,7 +533,7 @@ Example:
     df.split(0.2, 0.2)
         splits the train data in a 60%/20%/20% train/valid/test split
 
-Arguments:
+Args:
     valid_size: float (None)
         the fraction of the dataset that is used for the validation set.
     test_size: float (None)
@@ -542,8 +553,11 @@ Returns: copy of DFrame
     schedules the rows to be split into a train, valid and (optionally) test set.
 ```
 
+The example below splits the train data in a 60%/20%/20% train/valid/test split.
+
 
 ```python
+wine = read_csv('https://osf.io/8fwaj/download')
 wine = wine.split(0.2)
 len(wine.train), len(wine.valid)
 ```
@@ -555,12 +569,261 @@ len(wine.train), len(wine.valid)
 
 
 
-# Data selection
-
-By default, PipeTorch assumes that the last column is the target variable. All columns except the target columns will be the input features. You can use `columny()` and `columnx` to change this default bahavior. For filtering, you can just use Pandas.
+The example below splits the train data in a 80%/20% train/valid part. Stratify attempts to populate both parts with the same proportion over each value of the column city.
 
 
 ```python
+mpg
+```
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>mpg</th>
+      <th>cylinders</th>
+      <th>displacement</th>
+      <th>horsepower</th>
+      <th>weight</th>
+      <th>acceleration</th>
+      <th>model year</th>
+      <th>origin</th>
+      <th>car name</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>18.0</td>
+      <td>8</td>
+      <td>307.0</td>
+      <td>130</td>
+      <td>3504</td>
+      <td>12.0</td>
+      <td>70</td>
+      <td>1</td>
+      <td>chevrolet chevelle malibu</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>15.0</td>
+      <td>8</td>
+      <td>350.0</td>
+      <td>165</td>
+      <td>3693</td>
+      <td>11.5</td>
+      <td>70</td>
+      <td>1</td>
+      <td>buick skylark 320</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>18.0</td>
+      <td>8</td>
+      <td>318.0</td>
+      <td>150</td>
+      <td>3436</td>
+      <td>11.0</td>
+      <td>70</td>
+      <td>1</td>
+      <td>plymouth satellite</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>16.0</td>
+      <td>8</td>
+      <td>304.0</td>
+      <td>150</td>
+      <td>3433</td>
+      <td>12.0</td>
+      <td>70</td>
+      <td>1</td>
+      <td>amc rebel sst</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>17.0</td>
+      <td>8</td>
+      <td>302.0</td>
+      <td>140</td>
+      <td>3449</td>
+      <td>10.5</td>
+      <td>70</td>
+      <td>1</td>
+      <td>ford torino</td>
+    </tr>
+    <tr>
+      <th>...</th>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+    </tr>
+    <tr>
+      <th>393</th>
+      <td>27.0</td>
+      <td>4</td>
+      <td>140.0</td>
+      <td>86</td>
+      <td>2790</td>
+      <td>15.6</td>
+      <td>82</td>
+      <td>1</td>
+      <td>ford mustang gl</td>
+    </tr>
+    <tr>
+      <th>394</th>
+      <td>44.0</td>
+      <td>4</td>
+      <td>97.0</td>
+      <td>52</td>
+      <td>2130</td>
+      <td>24.6</td>
+      <td>82</td>
+      <td>2</td>
+      <td>vw pickup</td>
+    </tr>
+    <tr>
+      <th>395</th>
+      <td>32.0</td>
+      <td>4</td>
+      <td>135.0</td>
+      <td>84</td>
+      <td>2295</td>
+      <td>11.6</td>
+      <td>82</td>
+      <td>1</td>
+      <td>dodge rampage</td>
+    </tr>
+    <tr>
+      <th>396</th>
+      <td>28.0</td>
+      <td>4</td>
+      <td>120.0</td>
+      <td>79</td>
+      <td>2625</td>
+      <td>18.6</td>
+      <td>82</td>
+      <td>1</td>
+      <td>ford ranger</td>
+    </tr>
+    <tr>
+      <th>397</th>
+      <td>31.0</td>
+      <td>4</td>
+      <td>119.0</td>
+      <td>82</td>
+      <td>2720</td>
+      <td>19.4</td>
+      <td>82</td>
+      <td>1</td>
+      <td>chevy s-10</td>
+    </tr>
+  </tbody>
+</table>
+<p>398 rows × 9 columns</p>
+</div>
+
+
+
+
+```python
+mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg = mpg.split(0.2, stratify=['cylinders', 'origin'])
+```
+
+
+```python
+mpg.train.origin.value_counts()/len(mpg.train)
+```
+
+
+
+
+    1    0.606918
+    3    0.198113
+    2    0.194969
+    Name: origin, dtype: float64
+
+
+
+
+```python
+mpg.valid.origin.value_counts()/len(mpg.valid)
+```
+
+
+
+
+    1    0.7
+    3    0.2
+    2    0.1
+    Name: origin, dtype: float64
+
+
+
+
+```python
+mpg.train.cylinders.value_counts()/len(mpg.train)
+```
+
+
+
+
+    4    0.531447
+    8    0.254717
+    6    0.194969
+    3    0.009434
+    5    0.009434
+    Name: cylinders, dtype: float64
+
+
+
+
+```python
+mpg.valid.cylinders.value_counts()/len(mpg.valid)
+```
+
+
+
+
+    4    0.4375
+    8    0.2750
+    6    0.2750
+    3    0.0125
+    Name: cylinders, dtype: float64
+
+
+
+# Data selection
+
+By default, PipeTorch assumes that the last column is the target variable. All columns except the target columns will be the input features. You can use `columny()` and `columnx()` to change this default bahavior. For filtering, you can just use Pandas.
+
+
+```python
+wine = read_csv('https://osf.io/8fwaj/download')
 wine = wine.columny('quality')
 ```
 
@@ -586,7 +849,8 @@ Return: copy of DFrame
 
 
 ```python
-wine.scale().head() # scaling is configured, yet not visible in the DataFrame
+wine = read_csv('https://osf.io/8fwaj/download')
+wine.split(0.2).scale().head() # scaling is configured, yet not visible in the DataFrame
 ```
 
 
@@ -666,13 +930,13 @@ wine.scalex().train_X # but it will be when you prepare the data
 
 
 
-    array([[ 1.29927255,  0.7       , -0.95754073],
-           [-0.71712237,  0.88      , -0.57978176],
-           [-0.32685238,  0.76      , -0.57978176],
+    array([[ 1.29165151,  0.7       , -0.94864568],
+           [-0.71834459,  0.88      , -0.56949867],
+           [-0.32931309,  0.76      , -0.56949867],
            ...,
-           [ 0.71386757,  0.51      ,  0.55349517],
-           [ 1.68954254,  0.645     , -0.20202278],
-           [ 0.51873258,  0.31      ,  0.55349517]])
+           [ 0.70810426,  0.51      ,  0.56794236],
+           [ 1.68068302,  0.645     , -0.19035166],
+           [ 0.5135885 ,  0.31      ,  0.56794236]])
 
 
 
@@ -693,7 +957,8 @@ Returns: copy of DFrame
 
 
 ```python
-wine = wine.balance()
+wine = read_csv('https://osf.io/8fwaj/download')
+wine = wine.split(0.2).balance()
 ```
 
 The original DFrame is not affected
@@ -728,12 +993,12 @@ wine.train.groupby(by='quality').quality.count()
 
 
     quality
-    3    537
-    4    537
-    5    537
-    6    537
-    7    537
-    8    537
+    3    545
+    4    545
+    5    545
+    6    545
+    7    545
+    8    545
     Name: quality, dtype: int64
 
 
@@ -755,27 +1020,481 @@ Args:
     include_bias: bool (False)
         whether to generate a bias column
 
-Returns: copy of DFrame 
+Returns: DFrame 
 ```
+
+The example below selects just the $pH$ column as input feature, adds 2nd degree polynomials and the results is two columns: $pH$ and $pH^2$.
 
 
 ```python
+wine = read_csv('https://osf.io/8fwaj/download')
 wine.columnx('pH').polynomials(degree=2).train_X
 ```
 
+    Downloading https://osf.io/8fwaj/download
 
 
 
-    array([[ 3.25  , 10.5625],
-           [ 3.16  ,  9.9856],
-           [ 3.38  , 11.4244],
+
+
+    array([[ 3.51  , 12.3201],
+           [ 3.2   , 10.24  ],
+           [ 3.26  , 10.6276],
            ...,
-           [ 3.15  ,  9.9225],
-           [ 3.23  , 10.4329],
-           [ 3.15  ,  9.9225]])
+           [ 3.42  , 11.6964],
+           [ 3.57  , 12.7449],
+           [ 3.39  , 11.4921]])
 
 
 
 ### category()
 
+Converts the values in the targetted columns into indices. Since categories are assumed to be nominal, the category numbers are mostly useful in lookup tables (embeddings). Columns that are categorized are excluded from scaling. You cannot use this function together with polynomials or bias.
+        
+Note: PipeTorch only identifies categories that are in the training set (as it should be) and uses category 0 as an unknown category number for categories in the validation and test set that are not known during training. This way, no future information is used. 
+        
+This effect is not inplace, but configured to a copy that is returned. 
 
+```
+Args:
+    columns: str or list of str
+        list of columns that is to be converted into a category
+        
+    sort: True/False (default False) 
+        whether the unique values of these colums should be converted 
+        to indices in sorted order.
+
+Returns: DFrame
+```
+
+In the example below, we extract a column `brand` from the `car name`, and then convert this column to a category.  Category 0 will be used for brands that do not appear in the dataset.
+
+
+```python
+mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg['brand'] = mpg['car name'].apply(lambda n: n.split()[0])
+```
+
+
+```python
+mpg[['brand', 'car name', 'mpg']].split(0.2).category('brand').valid_X[:10]
+```
+
+
+
+
+    array([[4, 'plymouth satellite'],
+           [6, 'amc rebel sst'],
+           [2, 'buick estate wagon (sw)'],
+           [4, 'plymouth duster'],
+           [23, 'audi 100 ls'],
+           [0, 'hi 1200d'],
+           [1, 'chevrolet vega 2300'],
+           [3, 'ford pinto'],
+           [1, 'chevrolet impala'],
+           [5, 'pontiac safari (sw)']], dtype=object)
+
+
+
+### dummies()
+
+Converts the values in the targetted columns into dummy variables. This is an alernative to pd.get_dummies, that only using the train set to assess which values there are (as it should be), setting all variables to 0 for valid/test items that contain an unknown label. That way, no future information is used. Columns that are categorized are excluded from scaling. You cannot use this function together with polynomials or bias.
+        
+This effect is not inplace, but configured to a copy that is returned. 
+        
+```
+Args:
+    columns: str or list of str
+        the columns that are to be converted to dummy variables
+        
+    sort: bool (False)
+        whether the unique values of these colums should be converted 
+        to indices in sorted order.
+
+Returns: DFrame 
+```
+
+
+```python
+mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg['brand'] = mpg['car name'].apply(lambda n: n.split()[0])
+mpg[['brand', 'mpg']].split(0.2).dummies('brand').valid_X[:5]
+```
+
+
+
+
+    array([[0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0.],
+           [1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.,
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0.],
+           [0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0.]])
+
+
+
+# Visualization
+
+Some basic visualization is supported on the subsets only (i.e. train, valid, test). One of the nice things about PipeTorch, is that all data is visualized in its unscaled format, making the plots more easy to interpret.
+
+### scatter()
+
+Plots a scatter graph of this dataset using matplotlib.
+
+```
+Args:
+    x: str (None)
+        the column to use on the x-axis. If None, the first input feature is used.
+
+    y: str, Array or function (None)
+        the column to use in the y-axis. If None, the first target feature is used.
+        You may also pass an array with values (for example model predictions), but these
+        must be paired with the dataset rows. Alernatively, pass a function(X) that is called on X 
+        to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+        and when that fails with a Numpy Array.
+
+    xlabel: str (None)
+        the label to use on the x-axis. If None, the name of x is used.
+
+    ylabel: str (none)
+        the label to use on the y-axis. If None, the name of y is used.
+
+    title: str (None)
+        the title used for the figure
+
+    kwargs: dict
+        arguments that are passed to plt.plot
+```
+
+
+
+```python
+mpg = read_from_kaggle('uciml/autompg-dataset')
+df = mpg[['weight', 'mpg']]
+df.train.scatter(label='train')
+df.valid.scatter(label='valid')
+```
+
+
+    
+![png](Data_files/Data_50_0.png)
+    
+
+
+# scatter2d_class
+
+Plots a 2d scatter graph of this dataset using matplotlib. The y-label is used as a class label. Alternatively, there are also `scatter2d_size` and `scatter2d_color` functions.
+```
+Args:
+    x1: str (None)
+        the column to use on the x-axis. If None, the first input feature is used.
+
+    x2: str (None)
+        the column to use on the x-axis. If None, the second input feature is used.
+
+    y: str, Array or function (None)
+        the column to use as the series for the plot. If None, the first target feature is used.
+        You may also pass an array with values (for example model predictions), but these
+        must be paired to the dataset rows. Alernatively, pass a function(X) that is called on X 
+        to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+        and when that fails with a Numpy Array.
+
+    xlabel: str (None)
+        the label to use on the x-axis. If None, the name of x is used.
+
+    ylabel: str (none)
+        the label to use on the y-axis. If None, the name of y is used.
+
+    title: str (None)
+        the title used for the figure
+
+    loc: str ('upper right')
+        passed to plt.legend to place the legend in a certain position
+
+    noise: 0 (float)
+        transforms s0 that x1 and x2 are incremented with noise multiplied by a random number
+        from their respecrive standard deviation. This allows better visualization of discrete data.
+
+    kwargs: dict
+        arguments that are passed to plt.plot
+```
+
+
+```python
+wine = read_csv('https://osf.io/8fwaj/download')
+wine[['pH', 'alcohol', 'quality']].train.scatter2d_class()
+```
+
+    Downloading https://osf.io/8fwaj/download
+
+
+
+    
+![png](Data_files/Data_52_1.png)
+    
+
+
+# line()
+
+Plots a line graph of this dataset using matplotlib. This is most useful for plotting regression models
+since the function automatically sorts the data by the x-axis and interpolates the dataset.
+
+```
+Args:
+    x: str (None)
+        the column to use on the x-axis. If None, the first input feature is used.
+
+    y: str, Array or function (None)
+        the column to use in the y-axis. If None, the first target feature is used.
+        You may also pass an array with values (for example model predictions), but these
+        must be paired with the dataset rows. Alernatively, pass a function(X) that is called on X 
+        to generate y. PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+        and when that fails with a Numpy Array.
+
+    xlabel: str (None)
+        the label to use on the x-axis. If None, the name of x is used.
+
+    ylabel: str (none)
+        the label to use on the y-axis. If None, the name of y is used.
+
+    title: str (None)
+        the title used for the figure
+
+    kwargs: dict
+        arguments that are passed to plt.plot
+```
+
+The belows example trains a 3rd degree polynomial using 'weight' as input feature and 'mpg' as target variable. We can then use `line` to plot the function on the scatter plot.
+
+
+```python
+mpg = read_from_kaggle('uciml/autompg-dataset')
+df = mpg[['weight', 'mpg']].polynomials(degree=3)
+```
+
+
+```python
+from sklearn.linear_model import LinearRegression
+model = LinearRegression()
+model.fit(df.train_X, df.train_y)
+df.train.scatter()
+df.train.line(y=model.predict, c='b')
+```
+
+
+    
+![png](Data_files/Data_56_0.png)
+    
+
+
+# plot_boundary()
+
+Plots a decision boundary for classification models that use exactly two input features. 
+Prior to calling this function, you should already scatter_plot the dataset, beacuse this
+function uses the minimum and maximum values on the axis to do a grid search. It will then
+overlay the decision boundary on the existing plot.
+```
+Args:
+    predict: function (None)
+        a function(X) that is called to classify an X with two features 
+        PipeTorch will attempt to first use a tensor (in case of a PyTorch model) 
+        and when that fails with a Numpy Array.
+
+    levels: [ float ] ([0.5])
+        the levels of the decision boundaries to plot. Pass multiple values or None
+        to generate a contour plot.
+
+    kwargs: dict
+        arguments that are passed to plt.plot
+```
+
+In the example below, a Decision Tree is fitted on the wine dataset, and the decision boundary is visualized on the dataset. Indicating the boundary where the decision changes.
+
+
+```python
+wine = read_csv('https://osf.io/8fwaj/download')
+wine = wine[['pH', 'alcohol', 'quality']]
+wine.quality = wine.quality > 5
+```
+
+    Downloading https://osf.io/8fwaj/download
+
+
+
+```python
+from sklearn.tree import DecisionTreeClassifier
+model = DecisionTreeClassifier(max_depth=3)
+model.fit(wine.train_X, wine.train_y)
+wine.train.scatter2d_class(s=2)
+wine.train.plot_boundary(model.predict)
+```
+
+
+    
+![png](Data_files/Data_60_0.png)
+    
+
+
+# Data preparation
+
+Finally, the data pipeline is configured to prepare the data for use with SKLearn and PyTorch models. The subsets are made available through the `.train`, `.valid` and `.test` properties of the DataFrame. But these will still show the original data, i.e. not transformed. It is not until X and y are called that the data pipeline is executed.
+
+### Numpy Array
+
+To prepare the data as a numpy array, you can access the properties `.train_X`, `.train_y`, `.valid_X`, `.valid_y` and when assigned `.test_X` and `.test_y` 
+
+
+```python
+wine = read_csv('https://osf.io/8fwaj/download')
+wine = wine[['pH', 'alcohol', 'quality']].scale().split(0.2)
+wine.quality = wine.quality > 5
+```
+
+    Downloading https://osf.io/8fwaj/download
+
+
+
+```python
+wine.train[:5]
+```
+
+
+
+
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>pH</th>
+      <th>alcohol</th>
+      <th>quality</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>3.51</td>
+      <td>9.4</td>
+      <td>False</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>3.26</td>
+      <td>9.8</td>
+      <td>False</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>3.51</td>
+      <td>9.4</td>
+      <td>False</td>
+    </tr>
+    <tr>
+      <th>6</th>
+      <td>3.30</td>
+      <td>9.4</td>
+      <td>False</td>
+    </tr>
+    <tr>
+      <th>7</th>
+      <td>3.39</td>
+      <td>10.0</td>
+      <td>True</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+
+```python
+wine.train_X # or wine.train.X
+```
+
+
+
+
+    array([[ 1.26215623, -0.96543524],
+           [-0.32822229, -0.59103849],
+           [ 1.26215623, -0.96543524],
+           ...,
+           [ 0.68961996,  0.53215175],
+           [ 1.64384707, -0.21664174],
+           [ 0.49877454,  0.53215175]])
+
+
+
+# DataLoader
+
+To prepare the data as a PyTorch DataLoader, you can use `.to_dataloader()`. Alternatively, you can also create just a PyTorch DataSet with `.to_dataset()`, or for more easy use with the PipeTorch Trainer you can use `dataframe.to_databunch()` to generate a single object that wraps dataloaders for all subsets.
+
+
+```python
+wine = read_csv('https://osf.io/8fwaj/download')
+wine = wine[['pH', 'alcohol', 'quality']].scale().split(0.2)
+wine.quality = wine.quality > 5
+```
+
+
+```python
+train_dl = wine.train.to_dataloader()
+valid_dl = wine.valid.to_dataloader()
+```
+
+Then we can train a PyTorch model on it.
+
+
+```python
+from pipetorch.model import MultiLayerPerceptron_BinaryClass
+from pipetorch.train import Trainer
+from sklearn.metrics import f1_score
+from torch import nn
+model = MultiLayerPerceptron_BinaryClass(2, 1)
+trainer = Trainer(model, nn.BCELoss(), train_dl, valid_dl, metrics=f1_score)
+trainer.train(100, 1e-2, cycle=10)
+```
+
+
+    Total:   0%|          | 0/131200 [00:00<?, ?it/s]
+
+
+     10 0.33s trainloss=0.58099 validloss=0.56735 f1_score=0.74233 
+     20 0.31s trainloss=0.58089 validloss=0.56688 f1_score=0.74006 
+     30 0.31s trainloss=0.58066 validloss=0.56732 f1_score=0.74233 
+     40 0.31s trainloss=0.58064 validloss=0.56740 f1_score=0.74006 
+     50 0.32s trainloss=0.58076 validloss=0.56752 f1_score=0.74233 
+     60 0.31s trainloss=0.58069 validloss=0.56711 f1_score=0.74006 
+     70 0.31s trainloss=0.58103 validloss=0.56655 f1_score=0.74006 
+     80 0.31s trainloss=0.58086 validloss=0.56717 f1_score=0.74233 
+     90 0.31s trainloss=0.58117 validloss=0.56783 f1_score=0.74006 
+    100 0.31s trainloss=0.58098 validloss=0.56686 f1_score=0.74006 
+
+
+
+```python
+
+```

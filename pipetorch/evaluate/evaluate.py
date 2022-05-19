@@ -272,13 +272,9 @@ class Evaluator:
         boundaries.resize(xx.shape)
         return ax, xx, yy, boundaries
     
-    def plot_boundary(self, predict):
+    def plot_boundary(self, predict, levels=[0.5]):
         ax, xx, yy, boundary = self._boundaries(predict)
-        ax.contour(xx, yy, boundary, levels=[0.5])  
-        
-    def plot_contour(self, predict):
-        ax, xx, yy, boundary = self._boundaries(predict)
-        ax.contour(xx, yy, boundary)
+        ax.contour(xx, yy, boundary, levels=levels)  
         
     def _coef(self, coefs, subset, model):
         try:
