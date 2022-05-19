@@ -1,16 +1,18 @@
 # PipeTorch
 
-PipeTorch is a library to simplify predictive analytics experiments using SKLearn, PyTorch, Pandas. Although these libraries provide great support for the 'core business' of predictive analytics, for experiments you often have to write quite a bit of additional code to prepare data, create an evaluation report, optimize your models, etc. Between experiments, the additional code that is needed is often repetitive. This means that coding experiments is not as efficient as it could be, but also that the code between models that are compared might become inconsistent. 
+PipeTorch is a library to simplify predictive analytics experiments using SKLearn, PyTorch, Pandas. Although these libraries provide great support for the 'core business' of predictive analytics, for experiments you often have to write quite a bit of additional code to prepare data, create an evaluation report, optimize your models, etc. Between experiments, the additional code that is needed is often repetitive. This means that coding experiments is not as efficient as it could be, and that the code between models that are compared might become inconsistent. 
 
-The idea behind PipeTorch is to support the standard workflow of data science experiments. A minimal example can be as efficient as just four lines of code, allowing you to focus on the decisions that matter most instead of coding. Although, in our examples we prefer a few more lines to improve readability or to extend the experiment or its analysis. We structured PipeTorch in four submodules that can be used indepently: data - model - train - evaluate.
+The idea behind PipeTorch is to support the standard workflow of data science experiments. A minimal example can be as efficient as just four lines of code, allowing you to focus on the decisions that matter most instead of coding. Although, ideally we prefer a few more lines to improve readability or to extend the experiment or its analysis.
 
 # Workflow
 
 A simple workflow for a data science project consists of 4 steps:
-- **data**: loading, cleaning, visualizing and preparing the dataset. This step transforms the data to a form in which it can readily be processed using SKLearn or PyTorch.
-- **model**: this is the least supported step in PipeTorch as we most often use a model from SKLearn or handcode a model in PyTorch. But there are a few easy to use models for PyTorch to create a Perceptron, ConvNet and to do transfer learning.
-- **train**: for training and validating models in PyTorch there is a general purpose trainer. There is also support for model/hyperparameter optimization.
-- **evaluation**: report and visualize the model performance
+- [Data](markdown/Data.md): loading, cleaning, visualizing and preparing the dataset. This step transforms the data to a form in which it can readily be processed using SKLearn or PyTorch.
+- [Model](markdown/Model.md): this is the least supported step in PipeTorch as we most often use a model from SKLearn or handcode a model in PyTorch. But there are a few easy to use models for PyTorch to create a Perceptron, ConvNet and to do transfer learning.
+- [Train](markdown/Train.md): for training and validating models in PyTorch there is a general purpose trainer. There is also support for model/hyperparameter optimization.
+- [Evaluate](markdown/Evaluate.md): report and visualize the model performance
+
+We have organized PipeTorch in four modules with those names. Click on the links to get more info on each module. The modular design allows to use PipeTorch  for one or more of these steps, and code the other steps using other libaries.
 
 # Example
 
@@ -20,7 +22,7 @@ We will give an example here with SKlearn, and then one with PyTorch.
 ```python
 from torch import nn                    
 from pipetorch.train import *
-from pipetorch.data import read_from_kaggle
+from pipetorch.data import read_from_kaggle, create_kaggle_authentication
 from pipetorch.model import MultiLayerPerceptron_BinaryClass
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score
@@ -28,24 +30,21 @@ from sklearn.metrics import f1_score
 
 # Data
 
-In the data module are data loaders, to load data from .csv files, download from kaggle, use text and images. 
+In the data module are data loaders, to load data from .csv files, download from kaggle, use text and images. In this example, we will use the 'Wine' dataset from Kaggle https://www.kaggle.com/datasets/uciml/red-wine-quality-cortez-et-al-2009, which you can download using the read_from_kaggle function with the `username/datasetname` part from the kaggle url.
 
-# Using a Kaggle dataset
+Note: if you install PipeTorch on your own machine, you will need to (1) register at Kaggle, (2) create a token and (3) run `create_kaggle_authorization(username, token)` or install the `kaggle.json` file manually into `.kaggle`. Otherwise `read_from_kaggle` will not be authorized and fail.
 
-This is really easy with the `read_from_kaggle` function. For the 'Wine' dataset, the url is https://www.kaggle.com/datasets/uciml/red-wine-quality-cortez-et-al-2009 (for more information), and you can download this by entering the `username/datasetname` part from the kaggle url of the dataset like below. 
 
-The downloads are cached, and on the university machine the files will already be there. But if you install PipeTorch on your own machine, you will need to (1) register at Kaggle, (2) create a token and (3) run `create_kaggle_authorization(username, token)` or install the `kaggle.json` file manually. Otherwise `read_from_kaggle` will not be authorized and fail.
-
-# Cleaning, visualizing and data preparation
-
-The data is read in an extended Pandas DataFrame, that you can use as a DataFrame, but also provides a few powerful functions to clean, visualize and prepare the dataset.
+```python
+# create_kaggle_authentication(username, token)
+```
 
 
 ```python
 df = read_from_kaggle('uciml/red-wine-quality-cortez-et-al-2009') 
 ```
 
-In the first two lines, we just use Pandas. Anything you can do with a Pandas DataFrame, you can do here. The last line contains a two PipeTorch function, to split the dataset in a 80%-20% train/valid split and to scale the variables (by default with a StandardScaler). 
+The data is read as an extended DataFrame. We can use Pandas to select and clean the data. Then for the daa preparation, we can use functions that PipeTorch added to this DataFrame, to `split` the dataset in a 80%-20% train/valid split and to `scale` the variables (by default with a StandardScaler). 
 
 The call to `columny()` is optional, by default PipeTorch will use the last column as target variable and output this as a column vector. Actually, that is how PyTorch likes it, some SKLearn models will throw a warning if you do not pass y as a row vector, and the `vector=True` will give that and thus supress the warning.
 
@@ -67,7 +66,7 @@ df.train.scatter2d_class(s=2)
 
 
     
-![png](README_files/README_9_0.png)
+![png](README_files/README_10_0.png)
     
 
 
@@ -113,7 +112,7 @@ df.train.plot_boundary(model.predict)
 
 
     
-![png](README_files/README_14_0.png)
+![png](README_files/README_15_0.png)
     
 
 
@@ -191,7 +190,7 @@ t.learning_curve()
 
 
     
-![png](README_files/README_24_0.png)
+![png](README_files/README_25_0.png)
     
 
 
@@ -202,7 +201,7 @@ t.validation_curve()
 
 
     
-![png](README_files/README_25_0.png)
+![png](README_files/README_26_0.png)
     
 
 
@@ -233,7 +232,7 @@ df.train.plot_boundary(model)
 
 
     
-![png](README_files/README_29_0.png)
+![png](README_files/README_30_0.png)
     
 
 
