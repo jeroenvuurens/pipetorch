@@ -207,7 +207,7 @@ class Evaluator:
         
     def _store_predict(self, predict, df, **annot):
         y_pred = df._predict(predict)
-        self._store(df.y, y_pred, df=df, **annot)        
+        self._store_metrics(df.y, y_pred, df=df, **annot)        
         
     def _store_metrics(self, y, y_pred, df=None, **annot):
         if df is None:

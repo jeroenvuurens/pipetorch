@@ -5,6 +5,8 @@ setup(
      name='pipetorch',
      packages=find_packages(),
      #packages=['pipetorch', 'pipetorch.data'],
+     package_data={'pipetorch': ['data/datasets/*']},
+     include_package_data=True,
      version=__version__,
      author="Jeroen Vuurens",
      author_email="jbpvuurens@gmail.com",
@@ -12,7 +14,7 @@ setup(
      url="https://github.com/jeroenvuurens/pipetorch",
      download_url="https://github.com/jeroenvuurens/pipetorch/archive/refs/tags/v0.1a.tar.gz",
      keywords=['PyTorch', 'SKLearn', 'Machine Learning', 'Neural Network', 'Predictive Analytics'],
-     install_requires=['torch', 'torchvision', 'numpy', 'sklearn', 'matplotlib', 'pandas', 'pathlib', 'tqdm', 'statistics'],
+     install_requires=['torch', 'torchvision', 'numpy', 'sklearn', 'matplotlib', 'pandas', 'pathlib', 'tqdm', 'statistics', 'iterative-stratification'],
      classifiers=[
          "Development Status :: 3 - Alpha",
          "Intended Audience :: Education",

@@ -44,13 +44,12 @@ class show_warning:
 
 class _DFrame:
     _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', 
-                 '_pt_transposey', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', 
+                 '_pt_vectory', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', 
                  '_pt_dummies', '_pt_sequence_window', '_pt_sequence_shift_y', 
                  '_pt_split_shuffle', '_pt_split_stratify', '_pt_split_random_state', 
                  '_pt_folds_shuffle', '_pt_folds_stratify', '_pt_folds_random_state', 
                  '_pt_valid_size', '_pt_test_size', '_pt_balance', 
                  '_pt_train_valid_indices', '_pt_valid_indices', '_pt_test_indices',
-                 '_pt_indices_before_testsplit', '_pt_indices_after_testsplit',
                  '_pt_folds', '_pt_fold', '_pt_created_folds', 
                  '_pt_dataset', '_pt_transforms', '_pt_train_transforms']
 
@@ -59,7 +58,9 @@ class _DFrame:
                        '_pt__locked_train', '_pt__locked_valid', 
                        '_pt__locked_scalerx', '_pt__locked_scalery',
                        '_pt__locked_categoryx', '_pt__locked_categoryy', 
-                       '_pt__locked_dummiesx', '_pt__locked_dummiesy' ]
+                       '_pt__locked_dummiesx', '_pt__locked_dummiesy', '_pt__locked_len',
+                       '_pt__indices_before_testsplit', '_pt__indices_after_testsplit',
+]
 
     _internal_names = pd.DataFrame._internal_names + _locked_names
     
@@ -84,7 +85,7 @@ class _DFrame:
     def __init__(self, data, **kwargs):
         for m in self._metadata:
             self.__setattr__(m, None)
-            self._pt_transposey = False
+            self._pt_vectory = False
             self._pt_fold = 0
             try:
                 self.__setattr__(m, getattr(data, m))
@@ -100,6 +101,7 @@ class _DFrame:
             r._pt__locked_train_indices = self._pt__locked_train_indices
             r._pt__locked_valid_indices = self._pt__locked_valid_indices
             r._pt__locked_test_indices = self._pt__locked_test_indices
+            r._pt__locked_len = self._pt__locked_len
         return r
         
     def _dframe(self, data):
@@ -118,7 +120,7 @@ class _DFrame:
     @property
     def is_locked(self):
         try:
-            return self._pt__locked_train_indices is not None
+            return self._pt__locked_train_indices is not None and len(self) == self._pt__locked_len
         except:
             return False
     
@@ -134,6 +136,7 @@ class _DFrame:
             self._pt__locked_valid_indices = self._valid_indices
             self._pt__locked_train_indices = self._train_indices
             self._pt__locked_test_indices = self._test_indices
+            self._pt__locked_len = len(self)
     
     @property
     def _columny(self):
@@ -334,25 +337,25 @@ class _DFrame:
     @property
     def _indices_before_testsplit(self):
         try:
-            if self._pt_indices_before_testsplit is not None:
-                return self._pt_indices_before_testsplit
+            if self._pt__indices_before_testsplit is not None:
+                return self._pt__indices_before_testsplit
         except: pass
         try:
             test_indices = set(self._test_indices)
-            self._pt_indices_before_testsplit = np.array([ i for i in self._indices_unshuffled if i not in test_indices ])
+            self._pt__indices_before_testsplit = np.array([ i for i in self._indices_unshuffled if i not in test_indices ])
         except:
-            self._pt_indices_before_testsplit = self._indices_unshuffled
-        return self._pt_indices_before_testsplit
+            self._pt__indices_before_testsplit = self._indices_unshuffled
+        return self._pt__indices_before_testsplit
            
     @property
     def _indices_after_testsplit(self):
         try:
-            if self._pt_indices_after_testsplit is not None:
-                return self._pt_indices_after_testsplit
+            if self._pt__indices_after_testsplit is not None:
+                return self._pt__indices_after_testsplit
         except: pass
         test_indices = set(self._test_indices)
-        self._pt_indices_after_testsplit = np.array([ i for i in self._indices_before_testsplit if i not in test_indices ])
-        return self._pt_indices_after_testsplit
+        self._pt__indices_after_testsplit = np.array([ i for i in self._indices_before_testsplit if i not in test_indices ])
+        return self._pt__indices_after_testsplit
 
     @property
     def _test_size(self):
@@ -417,8 +420,8 @@ class _DFrame:
     def _pseudo_choose(self, indices, items):
         if self._pt_split_random_state is not None:
             random.seed(self._pt_split_random_state)
-        r = np.array(random.sample(indices, items % len(indices)))
-        r = np.hstack([indices] * (items // len(indices)) + [r])
+        r = np.array(random.sample(sorted(indices), items % len(indices)))
+        r = np.hstack([indices for i in range(items // len(indices))] + [r])
         return r
 
     @property
@@ -440,7 +443,7 @@ class _DFrame:
                 weights = self._pt_balance
                 n = max([ int(math.ceil(classlengths[c] / w)) for c, w in weights.items() ])
                 mask = np.hstack([self._pseudo_choose(classindices[c], round(n*weights[c])) for c in classes])
-            indices = np.array(indices)[ mask ]
+            indices = np.array(indices)[ mask.astype(int) ]
         return indices
 
     @property
@@ -863,6 +866,9 @@ class _DFrame:
             schdules to balance the train set
         """
         r = self._copy_with_indices()
+        try:
+            del r._pt__locked_train_indices
+        except: pass
         r._pt_balance = weights
         return r    
   
@@ -1034,32 +1040,29 @@ class _DFrame:
         r._pt_columny = [self._pt_columnx[0]]
         return r
     
-    def columny(self, columns=None, transpose=False):
+    def columny(self, columns=None, vector=False):
         """
-        By default, PipeTorch uses the last column as the target variable and transposes it to become a row vector.
-        This function can alter this default behavior. Transposing y is the default for single variable targets, 
-        since most loss functions and metrics cannot handle column vectors. The set target variables are 
-        automatically excluded from the input X.
+        Configures the generated target variable and shape.
         
         Arguments:
-            columns: str or list of str
+            columns: str or list of str (None)
                 single column name or list of columns that is to be used as target column. 
                 None: use the last column
-            transpose: bool (False)
-                whether to transpose y. 
-                When using a single target variable targets, setting this to True
-                allows to transpose the generated target vector.
+            vector: bool (False)
+                Some algorithms (e.g. knn) prefer y as a vector instead of an (n, 1) matrix. Setting 
+                vector=True returns the target variable as a vector instead of an (n, 1) matrix. This
+                can only be chosen when there is at most 1 target variable.
         
         Returns: DFrame 
             schedules the given column(s) to be used as target columns, 
-            and marks whether the target variable is to be transposed.
+            and marks whether the target variable is to converted into a vector.
         """
         
         r = self._copy_with_indices()
         if columns is not None:
             r._pt_columny = [columns] if type(columns) == str else columns
-        assert r._pt_columny is None or len(r._pt_columny) == 1 or not transpose, 'You cannot transpose multiple target columns'
-        r._pt_transposey = transpose
+        assert r._pt_columny is None or len(r._pt_columny) == 1 or not vector, 'You cannot create target vector with multiple columns'
+        r._pt_vectory = vector
         return r
 
     def columnx(self, *columns, omit=False):

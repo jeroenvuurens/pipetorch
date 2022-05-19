@@ -19,7 +19,7 @@ def to_numpy(arr):
 
 class _DSet:
     _metadata = ['_df', '_dfindices', '_pt_categoryx', '_pt_categoryy', '_pt_dummiesx', '_pt_dummiesy', 
-                 '_pt_columny', '_pt_columnx', '_pt_transposey', '_pt_bias', '_pt_polynomials', 
+                 '_pt_columny', '_pt_columnx', '_pt_vectory', '_pt_bias', '_pt_polynomials', 
                  '_pt_dtype', '_pt_sequence_window', '_pt_sequence_shift_y', '_pt_is_test', 
                  '_pt_dataset', '_pt_transforms']
     _internal_names = pd.DataFrame._internal_names + ["_pt__indices", "_pt__x_sequence"]
@@ -31,7 +31,7 @@ class _DSet:
 
         r._pt_columnx = self._pt_columnx
         r._pt_columny = self._pt_columny
-        r._pt_transposey = self._pt_transposey
+        r._pt_vectory = self._pt_vectory
         r._pt_bias = self._pt_bias
         r._pt_polynomials = self._pt_polynomials
         r._pt_sequence_window = self._pt_sequence_window
@@ -66,7 +66,7 @@ class _DSet:
         r._pt_columny = self._pt_columny
         r._pt_columnx = self._pt_columnx
         r._pt_is_test = self._pt_is_test
-        r._pt_transposey = self._pt_transposey
+        r._pt_vectory = self._pt_vectory
         r._pt_polynomials = self._pt_polynomials
         r._pt_transforms = self._pt_transforms
         r._pt_dataset = self._pt_dataset
@@ -172,8 +172,8 @@ class _DSet:
         return [ self.columns[-1] ] if self._pt_columny is None else self._pt_columny
         
     @property
-    def _transposey(self):
-        return True if self._pt_transposey is None else self._pt_transposey
+    def _vectory(self):
+        return True if self._pt_vectory is None else self._pt_vectory
             
     @property
     def _columnx(self):
@@ -406,7 +406,7 @@ class _DSet:
             
     @property
     def _y_transposed(self):
-        return self._y_scaled.squeeze() if self._transposey else self._y_scaled
+        return self._y_scaled.squeeze() if self._vectory else self._y_scaled
     
     @property
     def y(self):
@@ -463,7 +463,7 @@ class _DSet:
             r = TransformableDataset(r, *self._pt_transforms)
         return r
     
-    def _dataloader(self, batch_size=32, shuffle=True, collate_fn=None, **kwargs):
+    def to_dataloader(self, batch_size=32, shuffle=True, collate_fn=None, **kwargs):
         """
         Converts this DSet into a PyTorch DataLoader.
         
@@ -570,7 +570,7 @@ class DSet(pd.DataFrame, _DSet):
         r._pt_columnx = df._columnx
         r._pt_dataset = df._pt_dataset
         r._pt_transforms = transforms
-        r._pt_transposey = df._pt_transposey
+        r._pt_vectory = df._pt_vectory
         r._pt_polynomials = df._pt_polynomials
         r._pt_bias = df._pt_bias
         r._pt_dtype = df._pt_dtype

@@ -5,18 +5,45 @@ from getpass import getuser
 import pandas as pd
 import numpy as np
 import pickle
+import shutil
 import os
+from io import StringIO
+import pkgutil
 from sklearn.datasets import load_boston, load_iris
 from sklearn.metrics import f1_score
 from io import BytesIO
 from functools import partial
+from zipfile import ZipFile
 
-def path_user():
+def path_user(dataset=None):
+    if dataset is not None:
+        return Path.home() / '.pipetorchuser' / dataset.split('/')[-1]
     return Path.home() / '.pipetorchuser'
 
-def path_shared():
+def path_shared(dataset=None):
+    if dataset is not None:
+        return Path.home() / '.pipetorch' / dataset.split('/')[-1]    
     return Path.home() / '.pipetorch'
-    
+
+def dataset_path(dataset):
+    try:
+        p = path_shared(dataset)
+        if p.exists():
+            return p
+    except: pass
+    return path_user(dataset)
+
+def get_stored_path(filename, path=None):
+    if path is not None:
+        storedpath = path / filename
+    else:
+        storedpath = (path_user() / filename)
+        if not storedpath.exists():
+            storedpath = (path_shared() / filename)
+        if not storedpath.exists():
+            storedpath = (path_user() / filename)
+    return storedpath
+
 def get_filename(url):
     fragment_removed = url.split("#")[0]  # keep to left of first #
     query_string_removed = fragment_removed.split("?")[0]
@@ -28,55 +55,307 @@ def get_filename(url):
     if '.' in filename:
         filename = filename.rsplit( ".", 1 )[ 0 ] + '.csv'
     return filename
-    
-def read_excel(path, filename=None, alternativesource=None, sep=None, delimiter=None, **kwargs):
-    if filename is None:
-        filename = get_filename(path)
-    if (path_user() / filename).is_file():
-        return DFrame.read_csv(path_user() / filename, **kwargs)
-    if (path_shared() / filename).is_file():
-        return DFrame.read_csv(path_shared() / filename, **kwargs)
-    if alternativesource:
-        df = pd.read_excel(alternativesource())
-    else:
-        print('Downloading new file ' + path)
-        df = pd.read_excel(path, **kwargs)
-        df.columns = df.columns.str.replace(' ', '') 
-    (path_user()).mkdir(exist_ok=True)
-    df.to_csv(path_user() / filename, index=False)
-    return DFrame(df)
 
-def read_pd_csv(path, filename=None, alternativesource=None, sep=None, delimiter=None, **kwargs):
-    if sep:
-        kwargs['sep'] = sep
-    elif delimiter:
-        kwargs['sep'] = delimiter
+def to_csv(df, filename, **kwargs):
+    kwargs = { key:value for key, value in kwargs.items() if key in {'sep', 'quoting', 'quotechar', 'lineterminator', 'decimal', 'line_terminator', 'doublequote', 'escapechar'}}
+    kwargs['index'] = False
+    if 'sep' in kwargs and len(kwargs['sep']) > 1:
+        sep = kwargs['sep']
+        kwargs['sep'] = '¤'
+        csv = df.to_csv(**kwargs).replace('¤', sep)
+        with open(filename, 'w') as fout:
+            fout.write(csv)
+    else:
+        df.to_csv(filename, **kwargs)   
+
+def read_pd_excel(path, filename=None, save=True, **kwargs):
     if filename is None:
         filename = get_filename(path)
     if (path_user() / filename).is_file():
-        #print(str(Path.home() / '.pipetorchuser' / filename))
-        return pd.read_csv(path_user() / filename, **kwargs)
+        return pd.read_excel(path_user() / filename, **kwargs)
     if (path_shared() / filename).is_file():
-        #print(str(Path.home() / '.pipetorch' / filename))
-        return pd.read_csv(path_shared() / filename, **kwargs)
-    if alternativesource:
-        df = alternativesource()
-    else:
-        print('Downloading new file ' + path)
-        df = pd.read_csv(path, **kwargs)
-    (path_user()).mkdir(exist_ok=True)
-    if 'sep' in kwargs:
-        df.to_csv(path_user() / filename, index=False, sep=kwargs['sep'])
-    else:
-        df.to_csv(path_user() / filename, index=False)
+        return pd.read_excel(path_shared() / filename, **kwargs)
+    #print('Downloading new file ' + path)
+    df = pd.read_excel(path, **kwargs)
+    df.columns = df.columns.str.replace(' ', '') 
     return df
 
-def read_csv(path, filename=None, alternativesource=None, sep=None, delimiter=None, **kwargs):
-    return DFrame(read_pd_csv(path, filename=filename, alternativesource=alternativesource, sep=sep, delimiter=delimiter, **kwargs))
+def read_excel(path, filename=None, **kwargs):
+    return DFrame(read_pd_excel(path, filename=filename, **kwargs))
 
-def read_csv_file(filename, **kwargs):
-    return DFrame(pd.read_csv(filename, **kwargs))
+def create_kaggle_authentication(username, key):
+    """
+    Writes the authentication by kaggle to a file, so that PipeTorch can use the kaggle api to 
+    download datasets.
+    
+    Arguments:
+        username: str
+            your username at kaggle (you do need to register)
+        key: str
+            the token that you have generated on your kaggle account (can be read in the .json file)
+    """
+    if not os.path.exists(Path.home() / '.kaggle'):
+        os.path.mkdir(Path.home() / '.kaggle')
+    os.path.chmod(Path.home() / '.kaggle', 0o600)
+    kagglejson = Path.home() / '.kaggle' / '.kaggle.json'
+    if not os.path.exists(kagglejson):
+        with open (kagglejson, "w") as fout:
+            fout.write(f'{"username":"{username}", "key":"{key}"}')
+            print(f'kaggle authorization written to {kagglejson}')
+        os.path.chmod('~/.kaggle/kaggle.json', 0o600)
+    else:
+        print(f'kaggle authorization already exists, check {kagglejson}')
 
+def kaggle_download(dataset, shared=False):
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        api = KaggleApi()
+        api.authenticate()
+    except:
+        print('''
+        Error authenticating kaggle: you need to (1) register at kaggle (2) generate a token/key and 
+        (3) put your user credentials in ~/.kaggle/kaggle.json. You can perform (3) using 
+        pipetorch.data.create_kaggle_authentication(username, key)
+        ''')
+        return
+    path = path_shared(dataset) if shared else dataset_path(dataset)
+    print(f'Downloading {dataset} from kaggle to {path}')
+    api.dataset_download_files(dataset, path=path, unzip=True)
+
+def kaggle_download_competition(dataset, shared=False):
+    try:
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        api = KaggleApi()
+        api.authenticate()
+    except:
+        print('''
+        Error authenticating kaggle: you need to (1) register at kaggle (2) generate a token/key and 
+        (3) put your user credentials in ~/.kaggle/kaggle.json. You can perform (3) using 
+        pipetorch.data.create_kaggle_authentication(username, key)
+        ''')
+        return
+    path = path_shared(dataset) if shared else dataset_path(dataset)
+    print(f'Downloading {dataset} from kaggle to {path}')
+    api.competition_download_files(dataset, path=path)
+    for zfile in list(path.glob('*.zip')):
+        zip = ZipFile(zfile)
+        zip.extractall(path=path)
+        zfile.unlink()
+
+def read_pd_from_kaggle(dataset, filename=None, shared=False, force=False, **kwargs):
+    if force:
+        try:
+            path = path_user(dataset)
+            shutil.rmtree(path)
+        except: pass
+    path = dataset_path(dataset)
+    if force or not path.exists():
+        kaggle_download(dataset, shared=shared)
+    path = dataset_path(dataset)
+    assert path.exists(), f'Problem downloading Kaggle dataset {dataset}'
+    if filename is None:
+        filename = '**/*'
+    files = list(path.glob(filename))
+    assert len(files) == 1, f'There are multiple files that match {files}, set filename to select a file'
+    return pd.read_csv(path / files[0], **kwargs)
+
+def read_pd_from_kaggle_competition(dataset, filename=None, shared=False, force=False, **kwargs):
+    if force:
+        try:
+            path = path_user(dataset)
+            shutil.rmtree(path)
+        except: pass
+    path = dataset_path(dataset)
+    if force or not path.exists():
+        kaggle_download_competition(dataset, shared=shared)
+    path = dataset_path(dataset)
+    assert path.exists(), f'Problem downloading Kaggle dataset {dataset}'
+    if filename is None:
+        filename = '**/*'
+    files = list(path.glob(filename))
+    assert len(files) == 1, f'There are multiple files that match {files}, set filename to select a file'
+    return pd.read_csv(path / files[0], **kwargs)
+
+def read_from_kaggle(dataset, train=None, test=None, shared=False, force=False, **kwargs):
+    """
+    Reads a DFrame from a Kaggle dataset. The downloaded dataset is automatically stored so that the next time
+    it is read from file rather than downloaded. See `read_csv`. The dataset is stored by default in a folder
+    with the dataset name in `~/.pipetorchuser`.
+    
+    If the dataset is not cached, this functions requires a valid .kaggle/kaggle.json file, that you can 
+    create manually or with the function `create_kaggle_authentication()`.
+
+    Note: there is a difference between a Kaggle dataset and a Kaggle competition. For the latter, 
+    you have to use `read_from_kaggle_competition`.
+    
+    Example:
+        read_from_kaggle('uciml/autompg-dataset')
+            to read/download `https://www.kaggle.com/datasets/uciml/autompg-dataset`
+        read_from_kaggle('robmarkcole/occupancy-detection-data-set-uci', 'datatraining.txt', 'datatest.txt')
+            to combine a train and test set in a single DFrame
+    
+    Arguments:
+        dataset: str
+            the username/dataset part of the kaggle url, e.g. uciml/autompg-dataset for 
+            
+        train: str (None)
+            the filename that is used as the train set, e.g. 'train.csv'
+        test: str (None)
+            the filename that is used as the test set, e.g. 'test.csv'
+        shared: bool (False)
+            save the dataset in ~/.pipetorch instead of ~/.pipetorchuser, allowing to share downloaded
+            files between users.
+        force: bool (False)
+            when True, the dataset is always downloaded
+        **kwargs:
+            additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+            you will have to set engine='python'.
+            
+    Returns: DFrame
+    """
+    train = read_pd_from_kaggle(dataset, filename=train, shared=shared, force=force, **kwargs)
+    if test is not None:
+        test = read_pd_from_kaggle(dataset, filename=test, **kwargs)
+        return DFrame.from_train_test(train, test)
+    return DFrame(train)
+
+def read_from_kaggle_competition(dataset, train=None, test=None, shared=False, force=False, **kwargs):
+    train = read_pd_from_kaggle_competition(dataset, filename=train, shared=shared, force=force, **kwargs)
+    if test is not None:
+        test = read_pd_from_kaggle_competition(dataset, filename=test, **kwargs)
+        return DFrame.from_train_test(train, test)
+    return DFrame(train)
+
+def read_pd_csv(url, filename=None, path=None, save=False, **kwargs):
+    """
+    Reads a .csv file from cache or url. The place to store the file is indicated by path / filename
+    and when a delimiter is used, this is also used to save the file so that the original delimiter is kept.
+    The file is only downloaded using the url if it does not exsists on the filing system. If the file is
+    downloaded and save=True, it is also stored for future use.
+    
+    Arguments:
+        url: str
+            the url to download or a full path pointing to a .csv file
+        filename: str (None)
+            the filename to store the downloaded file under. If None, the filename is extracted from the url.
+        path: str (None)
+            the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+            dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+        save: bool (False)
+            whether to save a downloaded .csv
+        **kwargs:
+            additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+            you will have to set engine='python'.
+            
+    Returns: pd.DataFrame
+    """
+    if filename is None:
+        filename = get_filename(url)
+    storedpath = get_stored_path(filename, path)        
+    if not storedpath.exists():
+        storedpath = (path_user() / filename)
+        (path_user()).mkdir(exist_ok=True)
+        if '://' in url:
+            print(f'Downloading {url}')
+        df = pd.read_csv(url, **kwargs)
+        if save:
+            print(f'saving to {storedpath}')
+            to_csv(df, filename, **kwargs)
+        return df
+    else:
+        return pd.read_csv(storedpath, **kwargs)
+
+def read_csv(url, filename=None, path=None, save=False, **kwargs):
+    """
+    Reads a .csv file from cache or url. The place to store the file is indicated by path / filename
+    and when a delimiter is used, this is also used to save the file so that the original delimiter is kept.
+    The file is only downloaded using the url if it does not exsists on the filing system. If the file is
+    downloaded and save=True, it is also stored for future use.
+    
+    Arguments:
+        url: str
+            the url to download or a full path pointing to a .csv file
+        filename: str (None)
+            the filename to store the downloaded file under. If None, the filename is extracted from the url.
+        path: str (None)
+            the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+            dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+        save: bool (False)
+            whether to save a downloaded .csv
+        **kwargs:
+            additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+            you will have to set engine='python'.
+            
+    Returns: DFrame
+    """
+    return DFrame(read_pd_csv(url, filename=filename, path=path, save=save, **kwargs))
+    
+def read_pd_from_package(package, filename, **kwargs):
+    csv = pkgutil.get_data(package, filename).decode()
+    return pd.read_csv(StringIO(csv), **kwargs)
+
+def read_from_package(package, filename, **kwargs):
+    return DFrame(read_pd_from_package(package, filename))
+
+def read_pd_from_function(filename, function, path=None, save=True, **kwargs):
+    """
+    First checks if a .csv file is already stored, otherwise, calls the custom function to retrieve a 
+    DataFrame. 
+    
+    The place to store the file is indicated by path / filename.
+    The file is only retrieved from the function if it does not exsists on the filing system. 
+    If the file is retrieved and save=True, it is also stored for future use.
+    
+    Arguments:
+        filename: str (None)
+            the filename to store the downloaded file under.
+        function: func
+            a function that is called to retrieve the DataFrame if the file does not exist.
+        path: str (None)
+            the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+            dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+        save: bool (True)
+            whether to save a downloaded .csv
+        **kwargs:
+            additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+            you will have to set engine='python'.
+            
+    Returns: pd.DataFrame
+    """
+    storedpath = get_stored_path(filename, path)
+    if storedpath.is_file():
+        return pd.read_csv(storedpath, **kwargs)
+    df = function()
+    to_csv(df, storedpath, **kwargs)
+    return df
+    
+def read_from_function(filename, function, path=None, save=True, **kwargs):
+    """
+    First checks if a .csv file is already stored, otherwise, calls the custom function to retrieve a 
+    DataFrame. 
+    
+    The place to store the file is indicated by path / filename.
+    The file is only retrieved from the function if it does not exsists on the filing system. 
+    If the file is retrieved and save=True, it is also stored for future use.
+    
+    Arguments:
+        filename: str (None)
+            the filename to store the downloaded file under.
+        function: func
+            a function that is called to retrieve the DataFrame if the file does not exist.
+        path: str (None)
+            the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+            dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+        save: bool (True)
+            whether to save a downloaded .csv
+        **kwargs:
+            additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+            you will have to set engine='python'.
+            
+    Returns: DFrame
+    """
+    return DFrame(read_pd_from_function(filename, function, path=path, save=save, **kwargs))
+    
 def read_torchtext(torchtext_function):
     try:
         return torchtext_function(root=path_shared() / torchtext_function.__name__)
@@ -84,72 +363,42 @@ def read_torchtext(torchtext_function):
         return torchtext_function(root=path_user() / torchtext_function.__name__)
 
 def wine_quality():
-    return read_csv('https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv', delimiter=';')
+    return read_from_kaggle('uciml/red-wine-quality-cortez-et-al-2009')
 
 def telco_churn():
-    return read_csv('https://github.com/pmservice/wml-sample-models/raw/master/spark/customer-satisfaction-prediction/data/WA_Fn%20UseC_%20Telco%20Customer%20Churn.csv', filename='telco_churn.csv')
+    return read_from_kaggle('blastchar/telco-customer-churn')
 
-def movie_ratings():
-    def read():
-        COLS = ['user_id', 'movie_id', 'rating', 'timestamp']
-        return pd.read_csv("https://raw.githubusercontent.com/ChicagoBoothML/DATA___MovieLens___1M/master/ratings.dat",sep='::', engine='python', names=COLS)
-    return read_csv("movielens1M.csv", alternativesource=read)
+def movielens_ratings():
+    COLS = ['user_id', 'movie_id', 'rating', 'timestamp']
+    return read_from_kaggle('odedgolden/movielens-1m-dataset', 'ratings.dat', sep='::', engine='python', names=COLS)
 
-def movie_titles():
-    def read():
-        COLS = ['movie_id', 'title', 'genre']
-        return pd.read_csv("https://raw.githubusercontent.com/ChicagoBoothML/DATA___MovieLens___1M/master/movies.dat",sep='::', engine='python', encoding="iso-8859-1", names=COLS)
-    return read_csv("movies1M.csv", alternativesource=read)
+def movielens_movies():
+    COLS = ['movie_id', 'title', 'genre']
+    return read_from_kaggle('odedgolden/movielens-1m-dataset', 'movies.dat', sep='::', engine='python', names=COLS)
+    
+def movielens_users():
+    COLS = ['user_id', 'gender', 'age', 'occupation', 'zip_code']
+    return read_from_kaggle('odedgolden/movielens-1m-dataset', 'users.dat', sep='::', engine='python', names=COLS)
     
 def dam_outflow():
-    try:
-        with open("/data/datasets/dam_water_data.pickle", "rb") as myfile:
-            X_train, X_val, X_test, X_all, y_train, y_val, y_test, y_all = pickle.load(myfile)
-            train_indices = [ i for i, v in enumerate(X_all) if (X_train == v).any() ]
-            X_all = X_all.astype(np.float32)
-            y_all = y_all.astype(np.float32)
-            df = DFrame(np.concatenate([X_all, y_all.reshape(-1, 1)], axis=1), columns=['waterlevel', 'outflow'])
-        return df
-    except:
-        print('This dataset is not online, but was taken from Andrew Ng\'s Coursera course')
-
+    return read_from_package('pipetorch', 'data/datasets/dam_outflow.csv')
+    
 def boston_housing_prices():
-    """
-    Load the Boston Housing Prices dataset and return it as a Pandas Dataframe
-    """
-    def read():
-        data_url = "http://lib.stat.cmu.edu/datasets/boston"
-        raw_df = pd.read_csv(data_url, sep="\s+", skiprows=22, header=None)
-        data = np.hstack([raw_df.values[::2, :], raw_df.values[1::2, :3]])
-        df = pd.DataFrame(data)
-        df.columns = ["CRIM", "ZN", "INDUS", "CHAS", "NOX", "RM", "AGE", "DIS", "RAD", "TAX", "PTRATIO", "B", "LSTAT", "PRICE"]
-        return df
-    #boston = load_boston()
-    #df = pd.DataFrame(boston['data'] )
-    #df.columns = boston['feature_names']
-    #df['PRICE'] = boston['target']
-    return read_csv('boston.scv', alternativesource=read)
+    return read_from_kaggle('fedesoriano/the-boston-houseprice-data')
 
-def hotel_full():
-    df = read_csv('/data/datasets/hotel_bookings.csv', na_values=['NULL'])
+def hotel_booking():
+    return read_from_kaggle('mojtaba142/hotel-booking')
     df = df.sort_values(by=['arrival_date_year', 'arrival_date_week_number'])
-    df = df.drop(columns=['reservation_status', 'reservation_status_date'])
     df = df[[ c for c in df if c != 'is_canceled'] + ['is_canceled']]
     return DFrame(df)
 
 def hotel():
-    df = read_csv('/data/datasets/hotel.csv', na_values=['NULL'], skipinitialspace=True)
-    df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
-    df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
-    df = df[[ c for c in df if c != 'IsCanceled'] + ['IsCanceled']]
+    df = hotel_booking()
     train = df[(df.ArrivalDateYear < 2017) | (df.ArrivalDateWeekNumber < 14)]
     return DFrame(train)
 
-
 def hotel_test_orig():
-    df = read_csv('/data/datasets/hotel.csv', na_values=['NULL'], skipinitialspace=True)
-    df = df.sort_values(by=['ArrivalDateYear', 'ArrivalDateWeekNumber'])
-    df = df.drop(columns=['ReservationStatus', 'ReservationStatusDate'])
+    df = hotel_booking()
     hotel = df[(df.ArrivalDateYear == 2017) & (df.ArrivalDateWeekNumber > 13)]
     return DFrame(hotel)
 
@@ -163,103 +412,52 @@ def hotel_test_score(pred_y):
     return f1_score(hotel_test_y(), pred_y)
 
 def iris():
-    iris=load_iris()
-    df = pd.DataFrame(data=np.c_[iris['data'], iris['target']],
-                      columns= iris['feature_names'] + ['target'])
-    return DFrame(df)
+    return read_from_kaggle('uciml/iris')
 
 def bank_marketing():
-    return read_csv("https://github.com/llhthinker/MachineLearningLab/raw/master/UCI%20Bank%20Marketing%20Data%20Set/data/bank-additional/bank-additional-full.csv", filename='bank_marketing.csv', sep=';')
+    return read_from_kaggle('janiobachmann/bank-marketing-dataset')
 
 def auto_mpg():
-    return read_csv('https://raw.githubusercontent.com/joanby/python-ml-course/master/datasets/auto/auto-mpg.csv', na_values='?')
+    return read_from_kaggle('uciml/autompg-dataset')
 
 def big_mart_sales():
-    return read_csv('https://raw.githubusercontent.com/akki8087/Big-Mart-Sales/master/Train.csv', filename='big_mart_sales.csv')
+    return read_from_kaggle('brijbhushannanda1979/bigmart-sales-data', train='Train.csv', test='Test.csv')
 
 def advertising_channels():
-    return read_csv('https://raw.githubusercontent.com/nguyen-toan/ISLR/master/dataset/Advertising.csv').iloc[:,1:]
+    return read_from_kaggle('yasserh/advertising-sales-dataset')
 
-def titanic_survivors():
-    return read_csv('https://web.stanford.edu/class/archive/cs/cs109/cs109.1166/stuff/titanic.csv')
+def titanic():
+    read_from_kaggle_competition('titanic', 'train.csv', 'test.csv')
 
 def diamonds():
-    return read_csv('https://raw.githubusercontent.com/SiphuLangeni/Diamond-Price-Prediction/master/Diamonds.csv')
+    return read_from_kaggle('shivam2503/diamonds')
 
 def indian_liver():
-    return read_csv('https://archive.ics.uci.edu/ml/machine-learning-databases/00225/Indian%20Liver%20Patient%20Dataset%20(ILPD).csv')
-                   #names=["Age", "Gender", "Total Bilirubin", "Direct Bilirubin", "Alkphos Alkaline Phosphotase", "Sgpt Alamine Aminotransferase", "Sgot Aspartate Aminotransferase", "Total Protiens", "Albumin", "Albumin-Globulin Ratio", "Disease"])
+    return read_from_kaggle('uciml/indian-liver-patient-records')
 
 def ames_housing():
-    return read_excel('http://www.amstat.org/publications/jse/v19n3/decock/AmesHousing.xls')
+    return read_from_kaggle_competition('house-prices-advanced-regression-techniques', 'train.csv', 'test.csv')
     
-def flight_passengers():
-    import seaborn as sns
-    df = sns.load_dataset('flights')
-    #df['month'] = df.month.map({'Jan':0, 'Feb':1, 'Mar':2, 'Apr':3, 'May':4, 'Jun':5, 'Jul':6, 'Aug':7, 'Sep':8, 'Oct':9, 'Nov':10, 'Dec':11}).astype(np.float32)
-    return DFrame(df)
+def air_passengers():
+    return read_from_kaggle('rakannimer/air-passengers')
 
-def rossmann():
-    def read():
-        df = pd.read_csv('https://raw.githubusercontent.com/sarthaksoni25/Rossmann-Store-Sales-Prediction/master/dataset/train.csv')
-        return df['Id', 'Store', 'Date', 'DayOfWeek', 'Customers', 'Open', 'Promo', 'StateHoliday', 'SchoolHoliday', 'Sales']
-    return read_csv('rossmann.csv', alternativesource=read)
+def rossmann_store_sales():
+    return read_from_kaggle_competition('rossmann-store-sales', 'train.csv', 'test.csv')
+
+def rossmann_stores():
+    return read_from_kaggle_competition('rossmann-store-sales', 'store.csv')
 
 def california():
-    return read_csv('https://raw.githubusercontent.com/subhadipml/California-Housing-Price-Prediction/master/housing.csv', filename='california')
-                         
-def flights():
-    df = sns.load_dataset('flights')
-    df['month'] = df.month.map({'Jan':0, 'Feb':1, 'Mar':2, 'Apr':3, 'May':4, 'Jun':5, 'Jul':6, 'Aug':7, 'Sep':8, 'Oct':9, 'Nov':10, 'Dec':11}).astype(np.float32)
-    return DFrame(df)
-
-def nyse50(**kwargs):
-    df = pd.read_csv('/data/datasets/nyse-top50.csv', **kwargs)
-    return DFrame(df)
+    return read_from_kaggle('camnugent/california-housing-prices')
     
-def housing_prices_kaggle_train(**kwargs):
-    return read_csv_file('/data/datasets/housing_prices_advanced/train.csv', **kwargs)
-    
-def housing_prices_kaggle_test(**kwargs):
-    return read_csv_file('/data/datasets/housing_prices_advanced/test.csv', **kwargs)
-
-def housing_prices_kaggle(**kwargs):
-    train = read_csv_file('/data/datasets/housing_prices_advanced/train.csv', **kwargs)
-    test = read_csv_file('/data/datasets/housing_prices_advanced/test.csv', **kwargs)
-    return DFrame.from_train_test(train, test)
-
-def heart_disease_kaggle(**kwargs):
-    train = read_csv_file('/data/datasets/mlms1/train.csv', **kwargs)
-    test = read_csv_file('/data/datasets/mlms1/test_set.csv', **kwargs)
-    return DFrame.from_train_test(train, test)
+def heart_disease(**kwargs):
+    return read_from_kaggle('johnsmith88/heart-disease-dataset')
     
 def speeddate(**kwargs):
-    df = read_csv_file('/data/datasets/Speed Dating.csv', **kwargs)
-    return DFrame(df)
+    return read_from_kaggle('annavictoria/speed-dating-experiment')
     
 def occupancy():
-    """
-    Loads the occupancy dataset. Note that this loader does not respect the original train/valid/test split.
-    """
-    try:
-        import requests
-    except:
-        raise ModuleNotFoundError('You should install request to use this function.')
-    try:
-        from zipfile import ZipFile    
-    except:
-        raise ModuleNotFoundError('You should install zipfile to use this function.')
-    def read(i):
-        url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/00357/occupancy_data.zip'
-        content = requests.get(url)
-
-        f = ZipFile(BytesIO(content.content))
-        with f.open(f.namelist()[i], 'r') as g:     
-            return pd.read_csv(g)
-    train = read_pd_csv('occupancy_train.csv', alternativesource=partial(read, 2))
-    valid = read_pd_csv('occupancy_valid.csv', alternativesource=partial(read, 0))
-    #test = read_pd_csv('occupancy_test.csv', alternativesource=partial(read, 1))
-    return DFrame.from_dfs(train, valid)
+    return read_from_kaggle('robmarkcole/occupancy-detection-data-set-uci', 'datatraining.txt', 'datatest.txt')
 
 def ag_news(language='basic_english', min_freq=1, collate='pad'):
     from torchtext.datasets import AG_NEWS
@@ -269,26 +467,3 @@ def ag_news(language='basic_english', min_freq=1, collate='pad'):
 
 def bbc_news(language='basic_english', min_freq=1, collate='pad'):
     return TextCollection.from_csv('/data/datasets/bbc-text.csv', language=language, min_freq=min_freq).collate(collate)
-
-_ptdatasetslist = [('Indian Liver Disease', 'pt.indian_liver()', 'https://archive.ics.uci.edu/ml/datasets/ILPD+(Indian+Liver+Patient+Dataset)'),
-            ('Historial flight passengers', 'pt.flight_passengers()', 'From Seaborn library'),
-            ('Advertising channels', 'pt.advertising_channels()', 'https://www.kaggle.com/ashydv/advertising-dataset'),
-            ('Titanic survival', 'pt.titanic()', 'https://www.kaggle.com/c/titanic'),
-            ('Big Mart Sales', 'pt.big_mart_sales()', 'https://medium.com/total-data-science/big-mart-sales-data-science-projects-98919293c1b3'),
-            ('Auto MPG', 'pt.auto_mpg()', 'https://archive.ics.uci.edu/ml/datasets/auto+mpg'),
-            ('Bank Marketing', 'pt.bank_marketing()', 'https://archive.ics.uci.edu/ml/datasets/bank+marketing'),
-            ('Iris', 'pt.iris()', 'https://archive.ics.uci.edu/ml/datasets/iris'),
-            ('Boston Housing Prices', 'pt.boston_housing_prices()', 'https://www.cs.toronto.edu/~delve/data/boston/bostonDetail.html'),
-            ('Movie Ratings', 'pt.movie_ratings()', 'https://grouplens.org/datasets/movielens/1m/'),
-            ('Wine Quality', 'pt.wine_quality()', 'https://archive.ics.uci.edu/ml/datasets/wine+quality'),
-            ('Telco Churn', 'pt.telco_churn()', 'https://www.kaggle.com/blastchar/telco-customer-churn'),
-            ('Dam water outflow', 'pt.dam_outflow()', 'From Andrew Ng\'s Coursera Course'),
-            ('Kaggle House Prices Competition', 'pt.house_prices()', 'http://www.amstat.org/publications/jse/v19n3/decock/AmesHousing.xls'),
-            ('Rossmann Store Sales', 'pt.rossmann()', 'https://www.kaggle.com/c/rossmann-store-sales'),
-            ('California Housing', 'pt.california()', 'https://www.kaggle.com/camnugent/california-housing-prices'),
-            ('Flights', 'pt.flights()', 'Example Dataset from the Seaborn library with the number of passengers per month'),
-            ('NYSE', 'pt.nyse50()', 'Crawl of the 2020 quotes of the 50 stocks with the highest turnover on the New York Stock Exchange'),
-            ('Room occupancy', 'pt.occupancy()', 'https://archive.ics.uci.edu/ml/datasets/Occupancy+Detection+'),
-            ('AG News', 'pt.ag_news()', 'https://pytorch.org/text/stable/datasets.html#ag-news')
-           ]
-datasets = pd.DataFrame(_ptdatasetslist, columns=['dataset', 'method', 'url'])

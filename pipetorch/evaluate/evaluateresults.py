@@ -40,7 +40,8 @@ class EvaluatorResults(pd.DataFrame):
         for c in row.columns:
             if c not in self.columns:
                 self.insert(len(self.columns), c, np.NaN)
-        r = self.append(row, sort=True, ignore_index=True)
+        r = pd.concat([self, row], sort=True, ignore_index=True)
+        #r = self.append(row, sort=True, ignore_index=True)
         r.evaluator = self.evaluator
         return r
 
