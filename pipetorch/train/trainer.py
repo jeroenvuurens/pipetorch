@@ -505,6 +505,13 @@ class Trainer:
             del self._scheduler
         except: pass
 
+    def scheduler_step(self):
+        try:
+            self.scheduler.step()
+        except ValueError:
+            del self._scheduler
+            self.scheduler.step()
+        
     @property
     def scheduler(self):
         """
@@ -540,8 +547,7 @@ class Trainer:
                                   self._scheduler_epochs, **self.scheduler_params)
             elif schedulerclass == OneCycleLR:
                 scheduler_params = self.scheduler_params
-                scheduler_params['epochs'] = self._scheduler_epochs
-                scheduler_params['steps_per_epoch'] = len(self.train_dl)
+                scheduler_params['total_steps'] = math.ceil(len(self.train_dl) * self.cycle)
                 self._scheduler = OneCycleLR(self.optimizer, 
                                   self.min_lr, **scheduler_params) 
             else:
@@ -1227,7 +1233,7 @@ class Trainer:
         are logged during training in an evaluator. If a model was already
         (partially) trained, training will continue where it was left off.
         
-        Arguments:
+        Args:
             epochs: int
                 the number of epochs to train the model
             
@@ -1240,10 +1246,13 @@ class Trainer:
                     use a linearly decaying learning rate
                     between an upper and lower bound. 
             
-            cycle: int (None)
-                Configures after how many epochs there are in a cycle
+            cycle: int or float (None)
+                Configures after how many epochs there are in a cycle. 
                 the loss and metrics are logged and reported at the end of every cycle.
-                This is remembered for consecutive calls to train.
+                For training on very large training sets, if cycle is set to a whole integer
+                faction (e.g. cycle=1/10), then validation is done during after that part of
+                every epoch. 
+                The cycle setting is remembered for consecutive calls to train.
             
             silent: bool (False)
                 whether to report progress. Note that even when silent=True
@@ -1295,6 +1304,7 @@ class Trainer:
         self.scheduler_params = scheduler_params
         self.del_optimizer()
         self.lr = lr or self.lr
+        self.cycle = cycle or self.cycle
         if weight_decay is not None and self.weight_decay != weight_decay:
             self.weight_decay = weight_decay
         if momentum is not None and self.momentum != momentum:
@@ -1303,13 +1313,12 @@ class Trainer:
             self.optimizer = optimizer
         if scheduler is not False:
             self.scheduler = scheduler
-        self.cycle = cycle or self.cycle
-        cyclesnotimproved = 0
-        lastvalidation = None
+        self._cyclesnotimproved = 0
+        self._lastvalidation = None
         model = self.model
         torch.set_grad_enabled(False)
         maxepoch = self.epochid + epochs
-        epochspaces = int(math.log(maxepoch)/math.log(10)) + 1
+        self._epochspaces = int(math.log(maxepoch)/math.log(10)) + 1
         if pbar is None:
             if test:
                 self.currentpbar = tqdm_trainer(epochs, self.cycle, self.train_dl, self.valid_dl, self.test_dl, silent=silent)
@@ -1318,83 +1327,108 @@ class Trainer:
         else:
             self.currentpbar = pbar
         self._time()
+        if self.cycle < 1:
+            log_batches = np.linspace(0, len(self.train_dl), int(round(1 / self.cycle)) + 1)[1:]
+            log_batches = { int(round(b))-1 for b in log_batches }
+        else:
+            log_batches = { len(self.train_dl)-1 }
+        self._log_reset()
+        log_next_epoch = (self.epochid + self.cycle) if self.cycle >= 1 else (self.epochid + 1)
         for i in range(epochs):
             self.epochid += 1
-            epochloss = 0
-            n = 0
-            epoch_y_pred = []
-            epoch_y = []
-            self.scheduler
-            report = (((i + 1) % self.cycle) == 0 or i == epochs - 1)
+            log_this_epoch = self.epochid == log_next_epoch
             with self.train_mode:
-                for *X, y in self.train_Xy:
+                for batch, (*X, y) in enumerate(self.train_Xy):
+                    #print(self.cycle, len(self.train_dl), batch, log_batches, log_next_epoch, log_this_epoch)
+                    if self.scheduler._step_count == self.scheduler.total_steps:
+                        self.del_scheduler()
+                        self.scheduler
                     loss, y_pred = self.train_batch(*X, y=y)
                     self.scheduler.step()
+                        
                     try:
-                        # TODO naam aanpassen
                         y_pred = model.post_forward(y_pred)
                     except: pass
-                    if report:
-                        epochloss += loss.item() * len(y_pred)
-                        n += len(y_pred)
-                        epoch_y_pred.append(to_numpy(y_pred))
-                        epoch_y.append(to_numpy(y))
                     self.currentpbar.update(self.train_dl.batch_size)
-            if report:
-                epochloss /= n
-                epoch_y = np.concatenate(epoch_y, axis=0)
-                epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
-                metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, phase='train', epoch=self.epochid, **log)
-                self.evaluator._store_metric('loss', epochloss, phase='train', epoch=self.epochid, **log)
-                validloss, metrics = self.validate(pbar = self.currentpbar, log=log)
-                if test:
-                    self._test(pbar = self.currentpbar, log=log)
-                if not silent:
-                    reportmetric = ''
-                    for m in self.metrics:
-                        m = m.__name__
-                        value = metrics[m]
-                        try:
-                            reportmetric += f'{m}={value:.5f} '
-                        except: pass
-                    print(f'{self.epochid:>{epochspaces}} {self._time():.2f}s trainloss={epochloss:.5f} validloss={validloss:.5f} {reportmetric}')
-                if save is not None and save:
-                    self.commit(f'{save}-{self.epochid}')
-                if save_lowest is not None and save_lowest:
-                    if self.lowest_score is None or validloss < self.lowest_score:
-                        self.lowest_score = validloss
-                        self.commit('lowest')
+                    if log_this_epoch:
+                        self._log_increment(loss, y, y_pred)
+                        if (batch) in log_batches:
+                            validloss, validmetrics = self.validate(pbar = self.currentpbar, log=log)
+                            self._log(batch, validloss, validmetrics, log, silent)
+                            if save_lowest is not None and save_lowest:
+                                if self.lowest_score is None or validloss < self.lowest_score:
+                                    self.lowest_score = validloss
+                                    self.commit('lowest')
+                                    
+                if log_this_epoch:
+                    log_next_epoch = (self.epochid + self.cycle) if self.cycle >= 1 else (self.epochid + 1)
+                    if save is not None and save:
+                        self.commit(f'{save}-{self.epochid}')
                         
-                # Checking early termination
-                if targetloss is not None and validloss <= targetloss:
-                    try:
-                        self.currentpbar.finish_fold()
-                    except:
-                        pass
-                    if not silent:
-                        print('Early terminating because the validation loss reached the target.')
-                    break
-                if earlystop:
-                    if lastvalidation is None:
-                        lastvalidation = validloss
-                    else:
-                        if validloss < lastvalidation:
-                            cyclesnotimproved = 0
-                        else:
-                            cyclesnotimproved += 1
-                            if cyclesnotimproved >= earlystop:                                
-                                try:
-                                    self.currentpbar.finish_fold()
-                                except:
-                                    pass
-                                if not silent:
-                                    print(f'Early terminating because the validation loss has not improved the last {earlystop} cycles.')
-                                break
+                    if self._check_early_termination(validloss, targetloss, earlystop, silent):
+                        break
         if pbar is None:
             try:
                 self.currentpbar.close()    
             except: pass
     
+    def _log_reset(self):
+        self._epochloss = 0
+        self._n = 0
+        self._epoch_y_pred = []
+        self._epoch_y = []
+
+    def _log_increment(self, loss, y, y_pred):
+        self._epochloss += loss.item() * len(y_pred)
+        self._n += len(y_pred)
+        self._epoch_y_pred.append(to_numpy(y_pred))
+        self._epoch_y.append(to_numpy(y))
+        
+    def _log(self, batch, validloss, validmetrics, log, silent):
+        batch = (batch / len(self.train_dl)) if self.cycle < 1 else ""
+        epochid = self.epochid+batch if self.cycle < 1 else self.epochid
+        self._epochloss /= self._n
+        self._epoch_y = np.concatenate(self._epoch_y, axis=0)
+        self._epoch_y_pred = np.concatenate(self._epoch_y_pred, axis=0)
+        metrics = self.evaluator._store_metrics(self._epoch_y, self._epoch_y_pred, 
+                                                phase='train', epoch=epochid, **log)
+        self.evaluator._store_metric('loss', self._epochloss, phase='train', epoch=epochid, **log)
+        if not silent:
+            reportmetric = ''
+            for m in self.metrics:
+                m = m.__name__
+                value = validmetrics[m]
+                try:
+                    reportmetric += f'{m}={value:.5f} '
+                except: pass
+            epochid = f'{epochid:>{self._epochspaces}}' if self.cycle >= 1 else f'{epochid:{self._epochspaces+3}.2f}'
+            print(f'{epochid} {self._time():.2f}s trainloss={self._epochloss:.5f} validloss={validloss:.5f} {reportmetric}')
+        self._log_reset()
+
+    def _check_early_termination(self, validloss, targetloss, earlystop, silent):
+        if targetloss is not None and validloss <= targetloss:
+            try:
+                self.currentpbar.finish_fold()
+            except: pass
+            if not silent:
+                print('Early terminating because the validation loss reached the target.')
+            return True
+        if earlystop:
+            if self._lastvalidation is None:
+                self._lastvalidation = validloss
+            else:
+                if validloss < self._lastvalidation:
+                    self._cyclesnotimproved = 0
+                else:
+                    self._cyclesnotimproved += 1
+                    if self._cyclesnotimproved >= earlystop:                                
+                        try:
+                            self.currentpbar.finish_fold()
+                        except: pass
+                        if not silent:
+                            print(f'Early terminating because the validation loss has not improved the last {earlystop} cycles.')
+                        return True
+        
     def lowest(self):
         """
         Checkout the model with the lowest validation loss, that was committed when training with save_lowest=True
@@ -1410,13 +1444,13 @@ class Trainer:
                 print('last y', self.lasty)
             except: pass
             try:
-                print('last model(y)', self.lastyfw)
+                print('last model(X)', self.lastyfw)
             except: pass
             try:
-                print('last post_forward(model(y))', self.lastypfw)
+                print('last post_forward(model(X))', self.lastypfw)
             except: pass
         
-    def learning_curve(self, y='loss', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
+    def learning_curve(self, y='loss', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, **kwargs):
         """
         Plot a learning curve with the train and valid loss on the y-axis over the epoch on the x-axis. 
         The plot is generated by the evaluator that logged training progress. By default the evaluator logs:
@@ -1445,9 +1479,9 @@ class Trainer:
             **kwargs: dict
                 forwarded to matplotlib's plot or scatter function
         """
-        return self.evaluator.line_metric(x='epoch', series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, label_prefix=label_prefix, **kwargs)
+        return self.evaluator.line_metric(x='epoch', series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, label_prefix=label_prefix, fig=fig, **kwargs)
         
-    def validation_curve(self, y=None, x='epoch', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
+    def validation_curve(self, y=None, x='epoch', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, **kwargs):
         """
         Plot a metric for the train and valid set, over epoch on the x-axis. The plot is generated by the evaluator
         that logged training progress. By default the evaluator logs:
@@ -1475,13 +1509,23 @@ class Trainer:
                 the title of the plot
             label_prefix: str
                 prefixes the label, so that you can combine a plot with results from different metrics or models
+            fig: pyplot.Figure (None)
+                the figure to put the plot in
             **kwargs: dict
                 forwarded to matplotlib's plot or scatter function
         """
         if y is not None and type(y) != str:
             y = y.__name__
-        return self.evaluator.line_metric(x=x, series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, label_prefix=label_prefix, **kwargs)
+        return self.evaluator.line_metric(x=x, series=series, select=select, y=y, xlabel = xlabel, ylabel = ylabel, title=title, label_prefix=label_prefix, fig=fig, **kwargs)
        
+    def curves(self, x='epoch', series='phase', select=None, xlabel = None, title=None, label_prefix='', **kwargs):
+        m = len(self.metrics) + 1
+        fig, ax = plt.subplots(nrows=1, ncols=m, figsize=(6 * m, 4))
+        if title is not None:
+            fig.title(title)
+        for i, y in enumerate(['loss'] + self.metrics):
+            self.validation_curve(y=y, x=x, series=series, select=select, xlabel=xlabel, fig=ax[i], **kwargs)
+        
     def freeze(self, last=-1):
         """
         Mostly used for transfer learning, to freeze all parameters of a model, until the given layer (exclusive).

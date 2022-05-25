@@ -460,7 +460,7 @@ class _DSet:
         else:
             r = self._pt_dataset(*self.tensors)
         if self._pt_transforms is not None:
-            r = TransformableDataset(r, *self._pt_transforms)
+            r = TransformableDataset(r, self._dtype, *self._pt_transforms)
         return r
     
     def to_dataloader(self, batch_size=32, shuffle=True, collate_fn=None, **kwargs):

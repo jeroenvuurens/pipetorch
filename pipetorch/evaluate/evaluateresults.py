@@ -87,38 +87,48 @@ class EvaluatorResults(pd.DataFrame):
             raise ValueError('Unknown type passed for select')
         return s
 
-    def _plot(self, pltfunction, x, y=None, xlabel = None, ylabel = None, title=None, label=None, loc='upper right', **kwargs):
-        f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title)
+    def _plot(self, pltfunction, x, y=None, xlabel = None, ylabel = None, title=None, label=None, loc='best', fig=plt, **kwargs):
+        f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, fig=fig)
         if label is not None:
             kwargs['label'] = label
         pltfunction(f.graph_x, f.graph_y, **kwargs)      
         if 'label' in kwargs:
-            plt.legend(loc=loc)
+            fig.legend(loc=loc)
         
-    def line(self, x, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
-        self._plot(plt.plot, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
+    def line(self, x, y=None, xlabel = None, ylabel = None, title=None, fig=plt, **kwargs):
+        self._plot(fig.plot, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, fig=fig, **kwargs)
     
-    def scatter(self, x, y=None, xlabel = None, ylabel = None, title=None, **kwargs):
-        self._plot(plt.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, **kwargs)
+    def scatter(self, x, y=None, xlabel = None, ylabel = None, title=None, fig=plt, **kwargs):
+        self._plot(fig.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, fig=fig, **kwargs)
         
-    def line_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
-        self.evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
+    def line_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, **kwargs):
+        self.evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, fig=fig**kwargs)
 
-    def scatter_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', **kwargs):
-        self.evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, **kwargs)
+    def scatter_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, **kwargs):
+        self.evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, fig=fig, **kwargs)
 
 class _figure:
-    def __init__(self, results, x=None, y=None, xlabel = None, ylabel = None, title = None ):
+    def __init__(self, results, x=None, y=None, xlabel = None, ylabel = None, title = None, fig=plt ):
         self.evaluator = results.evaluator
         self.results = results
         self.x = x
         self.y = y
         self.xlabel = xlabel or self.x
         self.ylabel = ylabel or self.y
+        self.fig = fig
         if title is not None:
-            plt.title(title)
-        plt.ylabel(self.ylabel) 
-        plt.xlabel(self.xlabel)
+            try:
+                fig.title(title)
+            except:
+                fig.suptitle(title)
+        try:
+            fig.ylabel(self.ylabel)
+        except:
+            fig.set_ylabel(self.ylabel)
+        try:
+            fig.xlabel(self.xlabel)
+        except:
+            fig.set_xlabel(self.xlabel)
         self.results = self.results.sort_values(by=self.x)
         gx = [ row[self.x] for _, row in self.results.iterrows() ]
         gy = [ row[self.y] for _, row in self.results.iterrows() ]

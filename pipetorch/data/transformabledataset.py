@@ -1,6 +1,8 @@
 
 from torch.utils.data import Dataset
 from inspect import signature
+import torch
+import numpy as np
 
 class TransformationXY:
     """
@@ -18,13 +20,17 @@ class TransformableDataset(Dataset):
     Arguments:
         dataset: A Dataset that supports __len__() and __getitem__()
         
+        dtype: (None)
+            The dtype of the input, if None torch.float32
+        
         *transforms: [ callable ]
             Each callable is a function that is called as x = func(x) to transform only x
             or as x, y = func(x, y) to transform both x and y
     """
     
-    def __init__(self, dataset, *transforms):
+    def __init__(self, dataset, dtype, *transforms):
         self.dataset = dataset
+        self._dtype = dtype
         self.transforms = list(transforms)
         try:
             self.tensors = dataset.tensors
@@ -46,7 +52,11 @@ class TransformableDataset(Dataset):
                 x, y = t(x, y)
             else:
                 x = t(x)
-                
+        if self._dtype is None or not np.issubdtype(self._dtype, np.number):
+            x = x.type(torch.FloatTensor)
+        else:
+            x = x.type(self._dtype)
+       
         return x, y
     
     def __len__(self):

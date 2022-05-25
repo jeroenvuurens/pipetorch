@@ -1,10 +1,9 @@
 
 from .imagedframe import ImageDatabunch
-from ..data.datasets import path_user, path_shared, get_filename, read_excel, read_pd_csv, read_csv, read_csv_file
-from ..data.transformabledataset import TransformableDataset
+from ..data.datasets import path_user, path_shared
 import torch
 import torch.nn.functional as F
-from torchvision.datasets import MNIST, ImageFolder, CIFAR10, DatasetFolder
+from torchvision.datasets import MNIST, CIFAR10
 from torchvision.transforms import transforms
 from pathlib import Path
 from getpass import getuser
@@ -23,26 +22,50 @@ def create_path(p, mode=0o777):
 def image_folder():
     return f'/tmp/{getuser()}/images'
 
-class FastCIFAR(CIFAR10):
+def FastCIFAR(root=None, train=False, transform=None, size=None, normalize=True, download=False, **kwargs):
     """
     A Dataset for Cifar10, that caches the dataset on gpu for faster processing. 
     The images dataset are shaped (3,32,32).
     
     Arguments:
-        root: str - local path where the dataset is stored
-        train: bool (True) - whether the train or test set is retrieved
+        root: str (None)
+            local path where the dataset is stored. If None, first ~/.pipetorchuser is checked, then
+            ~/.pipetorch (for shared datasets).
+        
+        test: bool (True)
+            whether the train or test set is retrieved
+            
         transform: callable (None)
             an optional function to perform additional transformations on the data
             not that the images are already tensors
-        device: torch.device (None) - the device to cache the dataset on
-        size: int (None) - the required width/height of the image in pixels
+            
+        device: torch.device (None)
+            the device to cache the dataset on
+            
+        size: int (None)
+            the required width/height of the image in pixels
         normalize: bool (True)
             Whether or not to normalize the images, which you normally should do, 
             but when you wish to inspect some of the images, you can turn it off.
-        **kwargs: dict - passed to torchvision's CIFAR10
+            
+        **kwargs: dict
+            passed to torchvision's CIFAR10
     """
-    
-    def __init__(self, root='/data/datasets/cifarnew/', train=True, transform=None, size=None, normalize=True, **kwargs):
+    if root is None:
+        try:
+            return _FastCIFAR(root='~/.pipetorchuser', download=False, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+        except: pass
+        try:
+            return _FastCIFAR(root='~/.pipetorch', download=False, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+        except: pass
+        root = '~/.pipetorchuser'
+    return _FastCIFAR(root=root, download=download, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+
+class _FastCIFAR(CIFAR10):
+    def __init__(self, root=None, train=True, transform=None, size=None, normalize=True, **kwargs):
         super().__init__(root=root, train=train, **kwargs)
         self.transform=transform
         # Scale data to [0,1]
@@ -64,27 +87,47 @@ class FastCIFAR(CIFAR10):
             img = self.transform(img)
 
         return img, target  
-    
-class FastMNIST(MNIST):
+
+def FastMNIST(root=None, train=True, transform=None, size=None, normalize=True, download=False, **kwargs):
     """
-    A Dataset for MNist, that provides grayscale images (1 channel) 
-    and caches the dataset on gpu for faster processing
+    A Dataset for MNIST, that caches the dataset on gpu for faster processing. 
     The images dataset are shaped (3,32,32).
     
     Arguments:
-        root: str - local path where the dataset is stored
-        train: bool (True) - whether the train or test set is retrieved
+        root: str (None)
+            local path where the dataset is stored. If None, first ~/.pipetorchuser is checked, then
+            ~/.pipetorch (for shared datasets).
+        
+        train: bool (True)
+            whether the train or test set is retrieved
+            
         transform: callable (None)
             an optional function to perform additional transformations on the data
             not that the images are already tensors
-        device: torch.device (None) - the device to cache the dataset on
-        size: int (None) - the required width/height of the image in pixels
+            
+        size: int (None)
+            the required width/height of the image in pixels
         normalize: bool (True)
             Whether or not to normalize the images, which you normally should do, 
             but when you wish to inspect some of the images, you can turn it off.
-        **kwargs: dict - passed to torchvision's CIFAR10
+            
+        **kwargs: dict
+            passed to torchvision's CIFAR10
     """
-
+    if root is None:
+        try:
+            return _FastMNIST(root='~/.pipetorchuser', download=False, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+        except: pass
+        try:
+            return _FastMNIST(root='~/.pipetorch', download=False, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+        except: pass
+        root = '~/.pipetorchuser'
+    return _FastMNIST(root=root, download=download, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+                 
+class _FastMNIST(MNIST):
     def __init__(self, root, train=True, transform=None, size=None, normalize=True, **kwargs):
         super().__init__(root=root, train=train, **kwargs)
         self.transform=transform
@@ -105,7 +148,46 @@ class FastMNIST(MNIST):
 
         return img, target
 
-class FastMNIST3(FastMNIST):
+def FastMNIST3(root=None, train=True, transform=None, size=None, normalize=True, download=False, **kwargs):
+    """
+    A Dataset for MNIST, that caches the dataset on gpu for faster processing. 
+    The images dataset are shaped (3,32,32).
+    
+    Arguments:
+        root: str (None)
+            local path where the dataset is stored. If None, first ~/.pipetorchuser is checked, then
+            ~/.pipetorch (for shared datasets).
+        
+        train: bool (True)
+            whether the train or test set is retrieved
+            
+        transform: callable (None)
+            an optional function to perform additional transformations on the data
+            not that the images are already tensors
+            
+        size: int (None)
+            the required width/height of the image in pixels
+        normalize: bool (True)
+            Whether or not to normalize the images, which you normally should do, 
+            but when you wish to inspect some of the images, you can turn it off.
+            
+        **kwargs: dict
+            passed to torchvision's CIFAR10
+    """
+    if root is None:
+        try:
+            return _FastMNIST3(root='~/.pipetorchuser', download=False, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+        except: pass
+        try:
+            return _FastMNIST3(root='~/.pipetorch', download=False, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+        except: pass
+        root = '~/.pipetorchuser'
+    return _FastMNIST3(root=root, download=download, train=train, transform=transform, 
+                             normalize=normalize, **kwargs)
+
+class _FastMNIST3(_FastMNIST):
     """
     A Dataset for MNist, that provides RGB images (3 channels) 
     and caches the dataset on a device (gpu) for faster processing.
@@ -127,59 +209,98 @@ class FastMNIST3(FastMNIST):
         img = torch.cat([img, img, img], axis=0)
         return img, target
     
-def mnist(root='/data/datasets/mnist2', batch_size=64, transform=None, size=None, 
+def mnist(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, size=None, 
           normalize=True, num_workers=2, **kwargs):
     '''
-    returns an image_databunch of the mnist dataset in greyscale (shape is (1,28,28).
+    An image_databunch of the mnist dataset in greyscale (shape is (1,28,28).
     
     Arguments:
-        root: folder where the mnist dataset is, or will be downloaded to if it does not exist
-        batch_size (64): batch_size used for segmenting for training.
-        transform (None): pipeline of transformations that are applied to the images
-        size (None): resizes the images to (size, size).
-        normalize: bool (True)
-            Whether or not to normalize the images, which you normally should do, 
-            but when you wish to inspect some of the images, you can turn it off.
+        test: bool (False)
+            if True, the test set is also included in the Databunch
+            
+        valid_perc: float (0.1)
+            the size of the train set that is used for validation
+    
+        root=None, transform=None, size=None, normalize=True, **kwargs
+            see FastMNIST for documentation
+
+        batch_size=64, num_workers=2
+            see ImageDatabunch for documentation
+        
+    Returns: ImageDatabunch
+        An extension to a Databunch that provides additional support for images, like image normalization,
+        transformation and show_batch to show an example.    
     '''
     train_ds = FastMNIST(root, transform=transform, train=True, size=size, normalize=normalize, **kwargs)
-    valid_ds = FastMNIST(root, transform=transform, train=False, size=size, normalize=normalize, **kwargs)
-    return ImageDatabunch(train_ds, valid_ds, batch_size=batch_size, num_workers=num_workers)
+    if test:
+        test_ds = FastMNIST(root, transform=transform, train=False, size=size, normalize=normalize, **kwargs)
+    else:
+        test_ds = None
+    return ImageDatabunch.from_train_test_ds(train_ds, test_ds, 
+                                             valid_perc=valid_perc, batch_size=batch_size, 
+                                             num_workers=num_workers)
 
-def mnist3(root='/data/datasets/mnist2', batch_size=64, size=None, transform=None, 
+def mnist3(root=None, test=False, batch_size=64, valid_perc=0.1, size=None, transform=None, 
            normalize=True, num_workers=2, **kwargs):
     '''
-    returns a Databunch of the mnist dataset in rgb (shape is (3,28,28).
+    An image_databunch of the mnist dataset in RGB (shape is (3,28,28).
     
     Arguments:
-        root: folder where the mnist dataset is, or will be downloaded to if it does not exist
-        batch_size (64): batch_size used for segmenting for training.
-        transform (None): pipeline of transformations that are applied to the images
-        size (None): resizes the images to (size, size).
-        normalize: bool (True)
-            Whether or not to normalize the images, which you normally should do, 
-            but when you wish to inspect some of the images, you can turn it off.
+        test: bool (False)
+            if True, the test set is also included in the Databunch
+            
+        valid_perc: float (0.1)
+            the size of the train set that is used for validation
+    
+        root=None, transform=None, size=None, normalize=True, **kwargs
+            see FastMNIST for documentation
+
+        batch_size=64, num_workers=2
+            see ImageDatabunch for documentation
+
+    Returns: ImageDatabunch
+        An extension to a Databunch that provides additional support for images, like image normalization,
+        transformation and show_batch to show an example.    
     '''
     train_ds = FastMNIST3(root, transform=transform, train=True, size=size, normalize=normalize, **kwargs)
-    valid_ds = FastMNIST3(root, transform=transform, train=False, size=size, normalize=normalize, **kwargs)
-    return ImageDatabunch(train_ds, valid_ds, batch_size=batch_size, num_workers=num_workers)
+    if test:
+        test_ds = FastMNIST3(root, transform=transform, train=False, size=size, normalize=normalize, **kwargs)
+    else:
+        test_ds = None
+    return ImageDatabunch.from_train_test_ds(train_ds, test_ds, 
+                                             valid_perc=valid_perc, batch_size=batch_size, 
+                                             num_workers=num_workers)
 
-def cifar(root='/data/datasets/cifarnew/', batch_size=64, size=None, transform=None, 
+def cifar(root=None, batch_size=64, test=False, valid_perc=0.1, size=None, transform=None, 
           normalize=True, num_workers=2, **kwargs):
     '''
-    returns a Databunch of the Cifar10 dataset in rgb (shape is (3,32,32).
+    An image_databunch of the CIFAR10 dataset in RGB (shape is (3,32,32).
     
     Arguments:
-        root: folder where the mnist dataset is, or will be downloaded to if it does not exist
-        batch_size (64): batch_size used for segmenting for training.
-        transform (None): pipeline of transformations that are applied to the images
-        size (None): resizes the images to (size, size).
-        normalize: bool (True)
-            Whether or not to normalize the images, which you normally should do, 
-            but when you wish to inspect some of the images, you can turn it off.
+        test: bool (False)
+            if True, the test set is also included in the Databunch
+            
+        valid_perc: float (0.1)
+            the size of the train set that is used for validation
+    
+        root=None, transform=None, size=None, normalize=True, **kwargs
+            see FastMNIST for documentation
+
+        batch_size=64, num_workers=2
+            see ImageDatabunch for documentation
+            
+    Returns: ImageDatabunch
+        An extension to a Databunch that provides additional support for images, like image normalization,
+        transformation and show_batch to show an example.    
     '''
     train_ds = FastCIFAR(root, transform=transform, train=True, size=size, normalize=normalize, **kwargs)
-    valid_ds = FastCIFAR(root, transform=transform, train=False, size=size, normalize=normalize, **kwargs)
-    return ImageDatabunch(train_ds, valid_ds, batch_size=batch_size, num_workers=num_workers)
+    if test:
+        test_ds = FastCIFAR(root, transform=transform, train=False, size=size, normalize=normalize, **kwargs)
+    else:
+        test_ds = None
+    return ImageDatabunch.from_train_test_ds(train_ds, test_ds, 
+                                             valid_perc=valid_perc, batch_size=batch_size, 
+                                             num_workers=num_workers)
 
 def _gis_args(keywords, output_directory=None, 
                  image_directory=None, limit=200, format='jpg', color_type='full-color', 
@@ -204,7 +325,8 @@ def crawl_images(keywords, output_directory=None,
     """
     Downloads images through Google Image Search, 
     see https://google-images-download.readthedocs.io/en/latest/arguments.html 
-    for info on the arguments. 
+    for info on the arguments.
+    The supporting library frequently breaks, so do not expect this to work.
     
     Arguments:
         keywords: the keywords passed to google image search to retrieve images

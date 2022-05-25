@@ -345,22 +345,24 @@ class Evaluator:
         plt.ylabel(r'$\theta_1$')
         plt.show()
         
-    def _figure(self, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, interpolate=0, df=None):
-        return _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
+    def _figure(self, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, interpolate=0, df=None, fig=plt):
+        return _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df, fig=fig)
     
-    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='best', **kwargs):
+    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='best', fig=plt, **kwargs):
         #fig = plt.figure()
-        f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df)
+        f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df, fig=fig)
         pltfunction(f.graph_x, f.graph_y, marker=marker, **kwargs)
         if 'label' in kwargs:
-            plt.gca().legend(loc=loc)
+            fig.gca().legend(loc=loc)
         #fig.show()
     
-    def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', **kwargs):
-        self._plot(plt.plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, sort=True, df=df, loc=loc, **kwargs)
+    def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', fig=plt, **kwargs):
+        plot = fig.plot if fig else plt.plot
+        self._plot(plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, sort=True, df=df, loc=loc, fig=fig, **kwargs)
 
-    def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', **kwargs):
-        self._plot(plt.scatter, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, loc=loc, **kwargs)
+    def scatter(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', fig=plt, **kwargs):
+        plot = fig.scatter if fig else plt.scatter
+        self._plot(plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, loc=loc, fig=fig, **kwargs)
        
     def _select(self, select):
         if select is None:
@@ -383,7 +385,7 @@ class Evaluator:
         for g, d in selection.groupby(by=series):
             yield g, self.results._copy_meta(d)
     
-    def scatter_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+    def scatter_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, fig=None, **kwargs):
         y = y or self.metrics[0].__name__
         selection = self._select(select)
         selection = selection[selection.metric == y]
@@ -391,9 +393,9 @@ class Evaluator:
         unique_groups = self._unique(selection, series)
         for g, d in self._groups(selection, series=series):
             g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
-            d.scatter(x, y='value', xlabel=xlabel, ylabel=y, title=title, label=g, **kwargs)
+            d.scatter(x, y='value', xlabel=xlabel, ylabel=y, title=title, label=g, fig=fig, **kwargs)
     
-    def line_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, **kwargs):
+    def line_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, fig=None, **kwargs):
         y = y or self.metrics[0].__name__
         selection = self._select(select)
         selection = selection[selection.metric == y]
@@ -401,7 +403,7 @@ class Evaluator:
         unique_groups = len([ a for a in self._groups(selection, series=series) ])
         for g, d in self._groups(selection, series=series):
             g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
-            d.line(x, y='value', xlabel=xlabel, ylabel=ylabel, title=title, label=g, **kwargs)
+            d.line(x, y='value', xlabel=xlabel, ylabel=ylabel, title=title, label=g, fig=fig, **kwargs)
         
 class _figures:
     def _graph_coords_callable(self, df, f):
@@ -415,7 +417,7 @@ class _figures:
         return  [ self._graph_coords_callable(df, f) for f in fields ]         
         
 class _figure(_figures):
-    def __init__(self, evaluator, x=None, y=None, xlabel = None, ylabel = None, title = None, sort=False, interpolate=0, phase='train', df=None ):
+    def __init__(self, evaluator, x=None, y=None, xlabel = None, ylabel = None, title = None, sort=False, interpolate=0, phase='train', df=None, fig=plt ):
         self.evaluator = evaluator
         self.df = copy.copy(df if df is not None else evaluator.df.train)
         self.x = x
@@ -427,10 +429,20 @@ class _figure(_figures):
             self.df = self.df.sort_values(by=self.x)
         self.y = y
         self.ylabel = ylabel or self.y
+        self.fig = fig
         if title is not None:
-            plt.title(title)
-        plt.ylabel(self.ylabel) 
-        plt.xlabel(self.xlabel)
+            try:
+                fig.title(title)
+            except:
+                fig.suptitle(title)
+        try:
+            fig.ylabel(self.ylabel)
+        except:
+            fig.set_ylabel(self.ylabel)
+        try:
+            fig.xlabel(self.xlabel)
+        except:
+            fig.set_xlabel(self.xlabel)
 
     @property
     def x(self):
@@ -492,7 +504,7 @@ class _figure(_figures):
         return self.df.X
 
 class _figure2d(_figures):
-    def __init__(self, evaluator, x1=None, x2=None, y=None, xlabel = None, ylabel = None, title = None, df=None, noise=0 ):
+    def __init__(self, evaluator, x1=None, x2=None, y=None, xlabel = None, ylabel = None, title = None, df=None, noise=0, fig=plt ):
         self.evaluator = evaluator
         self.df = copy.copy(df if df is not None else evaluator.df.train)
         self.noise = noise
@@ -501,10 +513,20 @@ class _figure2d(_figures):
         self.y = y
         self.xlabel = xlabel
         self.ylabel = ylabel
+        self.fig = fig
         if title is not None:
-            plt.title(title)
-        plt.ylabel(self.ylabel) 
-        plt.xlabel(self.xlabel)
+            try:
+                fig.title(title)
+            except:
+                fig.suptitle(title)
+        try:
+            fig.ylabel(self.ylabel)
+        except:
+            fig.set_ylabel(self.ylabel)
+        try:
+            fig.xlabel(self.xlabel)
+        except:
+            fig.set_xlabel(self.xlabel)
 
     @property
     def x1(self):

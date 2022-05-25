@@ -12,6 +12,7 @@ import random
 import warnings
 import linecache
 from ..evaluate.evaluate import Evaluator
+from .helper import read_from_kaggle, read_from_kaggle_competition, read_csv, read_from_package, read_from_function
 from .databunch import Databunch
 from .dset import DSet
 from pandas.core.groupby.generic import DataFrameGroupBy, SeriesGroupBy
@@ -65,22 +66,6 @@ class _DFrame:
     _internal_names = pd.DataFrame._internal_names + _locked_names
     
     _internal_names_set = set( _internal_names )
-    
-    @classmethod
-    def read_csv(cls, path, **kwargs):
-        df = pd.read_csv(path, **kwargs)
-        return cls(df)
-
-    @classmethod
-    def from_dfs(cls, *dfs, **kwargs):
-        return cls(pd.concat(dfs), **kwargs)
-    
-    @classmethod
-    def from_train_test(cls, train, test, **kwargs):
-        r = cls(pd.concat([train, test], ignore_index=True))
-        r._pt_train_valid_indices = list(range(len(train)))
-        r._pt_test_indices = list(range(len(train), len(train)+len(test)))
-        return r
     
     def __init__(self, data, **kwargs):
         for m in self._metadata:
@@ -623,7 +608,8 @@ class _DFrame:
         #assert self.is_locked, 'You can only use a locked DFrame, to prevent inconsistencies in the transformation'
         return self._dset(df, range(len(df)))
         
-    def to_databunch(self, dataset=None, batch_size=32, num_workers=0, shuffle=True, pin_memory=False, balance=False):
+    def to_databunch(self, dataset=None, batch_size=32, valid_batch_size=None, 
+                     num_workers=0, shuffle=True, pin_memory=False, balance=False, collate=None):
         """
         Prepare the data as a Databunch that contains dataloaders for the train, valid and test part.
         batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor.
@@ -634,8 +620,9 @@ class _DFrame:
         Returns: Databunch
         """
         return Databunch(self, *self.to_datasets(dataset=dataset), 
-                         batch_size=batch_size, num_workers=num_workers, shuffle=shuffle, 
-                         pin_memory=pin_memory, balance=balance)    
+                         batch_size=batch_size, valid_batch_size=valid_batch_size, 
+                         num_workers=num_workers, shuffle=shuffle, 
+                         pin_memory=pin_memory, balance=balance, collate=collate)    
 
     def evaluate(self, *metrics):
         """
@@ -1184,22 +1171,17 @@ class _DFrame:
     
     def dummies(self, *columns):
         """
-        Converts the values in the targetted columns into dummy variables.
-        columns that are categorized are excluded from scaling. You cannot use this function together
-        with polynomials or bias.
-        
-        Note: PipeTorch only uses categories that are in the training set and uses category 0 as
-        an unknown category number for categories in the validation and test set that are not known during training.
-        This way, no future information is used. 
+        Converts the values in the targetted columns into dummy variables. This is an alernative to 
+        pd.get_dummies, that only uses the train set to assess which values there are (as it should be),
+        setting all variables to 0 for valid/test items that contain an unknown label. 
+        That way, no future information is used. Columns that are categorized are excluded from scaling. 
+        You cannot use this function together with polynomials or bias.
         
         This effect is not inplace, but configured to a copy that is returned. 
-        
-        Arguments:
+
+        Args:
             columns: str or list of str
                 the columns that are to be converted into a category
-            sort: bool (False)
-                whether the unique values of these colums should be converted 
-                to indices in sorted order.
         
         Returns: DFrame 
         """
@@ -1391,6 +1373,136 @@ class DFrame(pd.DataFrame, _DFrame):
         super().__init__(data, *args, **kwargs)
         _DFrame.__init__(self, data)
         
+    @classmethod
+    def read_csv(cls, path, **kwargs):
+        df = pd.read_csv(path, **kwargs)
+        return cls(df)
+
+    @classmethod
+    def from_dfs(cls, *dfs, **kwargs):
+        return cls(pd.concat(dfs), **kwargs)
+    
+    @classmethod
+    def from_train_test(cls, train, test, **kwargs):
+        r = cls(pd.concat([train, test], ignore_index=True))
+        r._pt_train_valid_indices = list(range(len(train)))
+        r._pt_test_indices = list(range(len(train), len(train)+len(test)))
+        return r
+    
+    @classmethod
+    def read_from_kaggle(cls, dataset, train=None, test=None, shared=False, force=False, **kwargs):
+        """
+        Reads a DFrame from a Kaggle dataset. The downloaded dataset is automatically stored so that the next time
+        it is read from file rather than downloaded. See `read_csv`. The dataset is stored by default in a folder
+        with the dataset name in `~/.pipetorchuser`.
+
+        If the dataset is not cached, this functions requires a valid .kaggle/kaggle.json file, that you can 
+        create manually or with the function `create_kaggle_authentication()`.
+
+        Note: there is a difference between a Kaggle dataset and a Kaggle competition. For the latter, 
+        you have to use `read_from_kaggle_competition`.
+
+        Example:
+            read_from_kaggle('uciml/autompg-dataset')
+                to read/download `https://www.kaggle.com/datasets/uciml/autompg-dataset`
+            read_from_kaggle('robmarkcole/occupancy-detection-data-set-uci', 'datatraining.txt', 'datatest.txt')
+            to combine a train and test set in a single DFrame
+
+        Arguments:
+            dataset: str
+                the username/dataset part of the kaggle url, e.g. uciml/autompg-dataset for 
+
+            train: str (None)
+                the filename that is used as the train set, e.g. 'train.csv'
+            test: str (None)
+                the filename that is used as the test set, e.g. 'test.csv'
+            shared: bool (False)
+                save the dataset in ~/.pipetorch instead of ~/.pipetorchuser, allowing to share downloaded
+                files between users.
+            force: bool (False)
+                when True, the dataset is always downloaded
+            **kwargs:
+                additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+                you will have to set engine='python'.
+
+        Returns: DFrame
+        """
+        train = read_from_kaggle(dataset, filename=train, shared=shared, force=force, **kwargs)
+        if test is not None:
+            test = read_from_kaggle(dataset, filename=test, **kwargs)
+            return cls.from_train_test(train, test)
+        return cls(train)
+           
+    @classmethod
+    def read_from_kaggle_competition(cls, dataset, train=None, test=None, shared=False, force=False, **kwargs):
+        train = read_from_kaggle_competition(dataset, filename=train, shared=shared, force=force, **kwargs)
+        if test is not None:
+            test = read_from_kaggle_competition(dataset, filename=test, **kwargs)
+            return cls.from_train_test(train, test)
+        return cls(train)
+
+    @classmethod
+    def read_csv(cls, url, filename=None, path=None, save=False, **kwargs):
+        """
+        Reads a .csv file from cache or url. The place to store the file is indicated by path / filename
+        and when a delimiter is used, this is also used to save the file so that the original delimiter is kept.
+        The file is only downloaded using the url if it does not exsists on the filing system. If the file is
+        downloaded and save=True, it is also stored for future use.
+
+        Arguments:
+            url: str
+                the url to download or a full path pointing to a .csv file
+            filename: str (None)
+                the filename to store the downloaded file under. If None, the filename is extracted from the url.
+            path: str (None)
+                the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+                dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+            save: bool (False)
+                whether to save a downloaded .csv
+            **kwargs:
+                additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+                you will have to set engine='python'.
+
+        Returns: DFrame
+        """
+        return cls(read_csv(url, filename=filename, path=path, save=save, **kwargs))
+   
+    @classmethod
+    def read_from_package(cls, package, filename, **kwargs):
+        return cls(read_from_package(package, filename))
+    
+    @classmethod
+    def read_from_function(cls, filename, function, path=None, save=True, **kwargs):
+        """
+        First checks if a .csv file is already stored, otherwise, calls the custom function to retrieve a 
+        DataFrame. 
+
+        The place to store the file is indicated by path / filename.
+        The file is only retrieved from the function if it does not exsists on the filing system. 
+        If the file is retrieved and save=True, it is also stored for future use.
+
+        Arguments:
+            filename: str (None)
+                the filename to store the downloaded file under.
+            function: func
+                a function that is called to retrieve the DataFrame if the file does not exist.
+            path: str (None)
+                the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+                dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+            save: bool (True)
+                whether to save a downloaded .csv
+            **kwargs:
+                additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+                you will have to set engine='python'.
+
+        Returns: DFrame
+        """
+        return cls(read_from_function(filename, function, path=path, save=save, **kwargs))
+
+    @classmethod
+    def read_excel(cls, path, filename=None, **kwargs):
+        return cls(read_excel(path, filename=filename, **kwargs))
+
     @property
     def _constructor(self):
         return DFrame
