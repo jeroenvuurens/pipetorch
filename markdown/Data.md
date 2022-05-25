@@ -18,7 +18,7 @@ We will provide some examples below, for more explanations and advanced options 
 
 
 ```python
-from pipetorch.data import read_from_kaggle, read_csv, create_kaggle_authentication
+from pipetorch.data import DFrame, create_kaggle_authentication
 import matplotlib.pyplot as plt
 import numpy as np
 ```
@@ -59,7 +59,7 @@ Returns: DFrame
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine
 ```
 
@@ -225,14 +225,14 @@ To read/download `https://www.kaggle.com/datasets/uciml/autompg-dataset`
 
 
 ```python
-mpg = read_from_kaggle('uciml/autompg-dataset') 
+mpg = DFrame.read_from_kaggle('uciml/autompg-dataset') 
 ```
 
 To read a dataset that has separate train and test set into a single DFrame
 
 
 ```python
-occupancy = read_from_kaggle('robmarkcole/occupancy-detection-data-set-uci', 'datatraining.txt', 'datatest.txt')
+occupancy = DFrame.read_from_kaggle('robmarkcole/occupancy-detection-data-set-uci', 'datatraining.txt', 'datatest.txt')
 ```
 
 # DataFrame
@@ -241,7 +241,7 @@ The returned object is an extension of a Pandas DataFrame (called a DFrame). Thi
 
 
 ```python
-mpg = read_from_kaggle('uciml/autompg-dataset') 
+mpg = DFrame.read_from_kaggle('uciml/autompg-dataset') 
 mpg.drop(columns='cylinders').head(5)
 ```
 
@@ -497,27 +497,28 @@ The example below creates 5 equally sized folds. Calls to df.fold(i) will set th
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine = wine.folds(5)
 for i in range(5):
     print(wine.fold(i).valid.head(2))
 ```
 
+    Downloading https://osf.io/8fwaj/download
        quality    pH  volatile acidity  alcohol
     1        5  3.20              0.88      9.8
     3        6  3.16              0.28      9.8
+       quality    pH  volatile acidity  alcohol
+    0        5  3.51              0.70      9.4
+    2        5  3.26              0.76      9.8
+        quality    pH  volatile acidity  alcohol
+    6         5  3.30              0.60      9.4
+    10        5  3.28              0.58      9.2
         quality    pH  volatile acidity  alcohol
     12        5  3.58             0.615      9.9
     15        5  3.17             0.620      9.2
-       quality    pH  volatile acidity  alcohol
-    0        5  3.51              0.70      9.4
-    8        7  3.36              0.58      9.5
         quality    pH  volatile acidity  alcohol
-    7         7  3.39              0.65     10.0
-    10        5  3.28              0.58      9.2
-       quality    pH  volatile acidity  alcohol
-    2        5  3.26              0.76      9.8
-    4        5  3.51              0.70      9.4
+    4         5  3.51              0.70      9.4
+    27        5  3.17              0.43      9.5
 
 
 ### split() 
@@ -557,10 +558,13 @@ The example below splits the train data in a 60%/20%/20% train/valid/test split.
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine = wine.split(0.2)
 len(wine.train), len(wine.valid)
 ```
+
+    Downloading https://osf.io/8fwaj/download
+
 
 
 
@@ -750,7 +754,7 @@ mpg
 
 
 ```python
-mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg = DFrame.read_from_kaggle('uciml/autompg-dataset')
 mpg = mpg.split(0.2, stratify=['cylinders', 'origin'])
 ```
 
@@ -762,9 +766,9 @@ mpg.train.origin.value_counts()/len(mpg.train)
 
 
 
-    1    0.606918
-    3    0.198113
-    2    0.194969
+    1    0.628931
+    3    0.207547
+    2    0.163522
     Name: origin, dtype: float64
 
 
@@ -777,9 +781,9 @@ mpg.valid.origin.value_counts()/len(mpg.valid)
 
 
 
-    1    0.7
-    3    0.2
-    2    0.1
+    1    0.6125
+    2    0.2250
+    3    0.1625
     Name: origin, dtype: float64
 
 
@@ -792,11 +796,11 @@ mpg.train.cylinders.value_counts()/len(mpg.train)
 
 
 
-    4    0.531447
-    8    0.254717
-    6    0.194969
-    3    0.009434
-    5    0.009434
+    4    0.496855
+    8    0.264151
+    6    0.220126
+    3    0.012579
+    5    0.006289
     Name: cylinders, dtype: float64
 
 
@@ -809,10 +813,10 @@ mpg.valid.cylinders.value_counts()/len(mpg.valid)
 
 
 
-    4    0.4375
-    8    0.2750
-    6    0.2750
-    3    0.0125
+    4    0.5750
+    8    0.2375
+    6    0.1750
+    5    0.0125
     Name: cylinders, dtype: float64
 
 
@@ -823,9 +827,12 @@ By default, PipeTorch assumes that the last column is the target variable. All c
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine = wine.columny('quality')
 ```
+
+    Downloading https://osf.io/8fwaj/download
+
 
 # Data preprocessing
 
@@ -849,9 +856,12 @@ Return: copy of DFrame
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine.split(0.2).scale().head() # scaling is configured, yet not visible in the DataFrame
 ```
+
+    Downloading https://osf.io/8fwaj/download
+
 
 
 
@@ -930,13 +940,13 @@ wine.scalex().train_X # but it will be when you prepare the data
 
 
 
-    array([[ 1.29165151,  0.7       , -0.94864568],
-           [-0.71834459,  0.88      , -0.56949867],
-           [-0.32931309,  0.76      , -0.56949867],
+    array([[-0.78782264,  1.28864292,  0.7       ],
+           [-0.78782264, -0.7199333 ,  0.88      ],
+           [-0.78782264, -0.33117661,  0.76      ],
            ...,
-           [ 0.70810426,  0.51      ,  0.56794236],
-           [ 1.68068302,  0.645     , -0.19035166],
-           [ 0.5135885 ,  0.31      ,  0.56794236]])
+           [ 0.45084835,  0.70550789,  0.51      ],
+           [-0.78782264,  1.6773996 ,  0.645     ],
+           [ 0.45084835,  0.51112954,  0.31      ]])
 
 
 
@@ -957,9 +967,12 @@ Returns: copy of DFrame
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine = wine.split(0.2).balance()
 ```
+
+    Downloading https://osf.io/8fwaj/download
+
 
 The original DFrame is not affected
 
@@ -993,12 +1006,12 @@ wine.train.groupby(by='quality').quality.count()
 
 
     quality
-    3    545
-    4    545
-    5    545
-    6    545
-    7    545
-    8    545
+    3     256
+    4     240
+    5    1895
+    6    3170
+    7    1329
+    8     292
     Name: quality, dtype: int64
 
 
@@ -1027,7 +1040,7 @@ The example below selects just the $pH$ column as input feature, adds 2nd degree
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine.columnx('pH').polynomials(degree=2).train_X
 ```
 
@@ -1071,7 +1084,7 @@ In the example below, we extract a column `brand` from the `car name`, and then 
 
 
 ```python
-mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg = DFrame.read_from_kaggle('uciml/autompg-dataset')
 mpg['brand'] = mpg['car name'].apply(lambda n: n.split()[0])
 ```
 
@@ -1083,16 +1096,16 @@ mpg[['brand', 'car name', 'mpg']].split(0.2).category('brand').valid_X[:10]
 
 
 
-    array([[4, 'plymouth satellite'],
-           [6, 'amc rebel sst'],
-           [2, 'buick estate wagon (sw)'],
-           [4, 'plymouth duster'],
-           [23, 'audi 100 ls'],
-           [0, 'hi 1200d'],
-           [1, 'chevrolet vega 2300'],
-           [3, 'ford pinto'],
+    array([[3, 'plymouth fury iii'],
+           [16, 'datsun pl510'],
+           [17, 'volkswagen 1131 deluxe sedan'],
+           [24, 'audi 100 ls'],
+           [16, 'datsun pl510'],
+           [5, 'ford torino 500'],
            [1, 'chevrolet impala'],
-           [5, 'pontiac safari (sw)']], dtype=object)
+           [3, 'plymouth fury iii'],
+           [6, 'pontiac safari (sw)'],
+           [23, 'fiat 124b']], dtype=object)
 
 
 
@@ -1116,7 +1129,7 @@ Returns: DFrame
 
 
 ```python
-mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg = DFrame.read_from_kaggle('uciml/autompg-dataset')
 mpg['brand'] = mpg['car name'].apply(lambda n: n.split()[0])
 mpg[['brand', 'mpg']].split(0.2).dummies('brand').valid_X[:5]
 ```
@@ -1124,21 +1137,21 @@ mpg[['brand', 'mpg']].split(0.2).dummies('brand').valid_X[:5]
 
 
 
-    array([[0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+    array([[0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0.],
+           [0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
             0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-            0., 0., 0., 0.],
+            0.],
            [1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
             0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-            0., 0., 0., 0.],
-           [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.,
-            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-            0., 0., 0., 0.],
+            0.],
            [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-            0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0.,
-            0., 0., 0., 0.],
-           [0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0.,
-            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-            0., 0., 0., 0.]])
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.,
+            0.],
+           [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0.]])
 
 
 
@@ -1178,7 +1191,7 @@ Args:
 
 
 ```python
-mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg = DFrame.read_from_kaggle('uciml/autompg-dataset')
 df = mpg[['weight', 'mpg']]
 df.train.scatter(label='train')
 df.valid.scatter(label='valid')
@@ -1230,7 +1243,7 @@ Args:
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine[['pH', 'alcohol', 'quality']].train.scatter2d_class()
 ```
 
@@ -1277,7 +1290,7 @@ The belows example trains a 3rd degree polynomial using 'weight' as input featur
 
 
 ```python
-mpg = read_from_kaggle('uciml/autompg-dataset')
+mpg = DFrame.read_from_kaggle('uciml/autompg-dataset')
 df = mpg[['weight', 'mpg']].polynomials(degree=3)
 ```
 
@@ -1321,7 +1334,7 @@ In the example below, a Decision Tree is fitted on the wine dataset, and the dec
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine = wine[['pH', 'alcohol', 'quality']]
 wine.quality = wine.quality > 5
 ```
@@ -1354,7 +1367,7 @@ To prepare the data as a numpy array, you can access the properties `.train_X`, 
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine = wine[['pH', 'alcohol', 'quality']].scale().split(0.2)
 wine.quality = wine.quality > 5
 ```
@@ -1395,19 +1408,25 @@ wine.train[:5]
   </thead>
   <tbody>
     <tr>
-      <th>0</th>
+      <th>1</th>
+      <td>3.20</td>
+      <td>9.8</td>
+      <td>False</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>3.16</td>
+      <td>9.8</td>
+      <td>True</td>
+    </tr>
+    <tr>
+      <th>4</th>
       <td>3.51</td>
       <td>9.4</td>
       <td>False</td>
     </tr>
     <tr>
-      <th>2</th>
-      <td>3.26</td>
-      <td>9.8</td>
-      <td>False</td>
-    </tr>
-    <tr>
-      <th>4</th>
+      <th>5</th>
       <td>3.51</td>
       <td>9.4</td>
       <td>False</td>
@@ -1417,12 +1436,6 @@ wine.train[:5]
       <td>3.30</td>
       <td>9.4</td>
       <td>False</td>
-    </tr>
-    <tr>
-      <th>7</th>
-      <td>3.39</td>
-      <td>10.0</td>
-      <td>True</td>
     </tr>
   </tbody>
 </table>
@@ -1438,13 +1451,13 @@ wine.train_X # or wine.train.X
 
 
 
-    array([[ 1.26215623, -0.96543524],
-           [-0.32822229, -0.59103849],
-           [ 1.26215623, -0.96543524],
+    array([[-0.70426162, -0.58227018],
+           [-0.96391875, -0.58227018],
+           [ 1.30808119, -0.96092713],
            ...,
-           [ 0.68961996,  0.53215175],
-           [ 1.64384707, -0.21664174],
-           [ 0.49877454,  0.53215175]])
+           [ 0.72385264,  0.55370067],
+           [ 1.6975669 , -0.20361323],
+           [ 0.52910978,  0.55370067]])
 
 
 
@@ -1454,10 +1467,13 @@ To prepare the data as a PyTorch DataLoader, you can use `.to_dataloader()`. Alt
 
 
 ```python
-wine = read_csv('https://osf.io/8fwaj/download')
+wine = DFrame.read_csv('https://osf.io/8fwaj/download')
 wine = wine[['pH', 'alcohol', 'quality']].scale().split(0.2)
 wine.quality = wine.quality > 5
 ```
+
+    Downloading https://osf.io/8fwaj/download
+
 
 
 ```python
@@ -1482,16 +1498,16 @@ trainer.train(100, 1e-2, cycle=10)
     Total:   0%|          | 0/131200 [00:00<?, ?it/s]
 
 
-     10 0.33s trainloss=0.58099 validloss=0.56735 f1_score=0.74233 
-     20 0.31s trainloss=0.58089 validloss=0.56688 f1_score=0.74006 
-     30 0.31s trainloss=0.58066 validloss=0.56732 f1_score=0.74233 
-     40 0.31s trainloss=0.58064 validloss=0.56740 f1_score=0.74006 
-     50 0.32s trainloss=0.58076 validloss=0.56752 f1_score=0.74233 
-     60 0.31s trainloss=0.58069 validloss=0.56711 f1_score=0.74006 
-     70 0.31s trainloss=0.58103 validloss=0.56655 f1_score=0.74006 
-     80 0.31s trainloss=0.58086 validloss=0.56717 f1_score=0.74233 
-     90 0.31s trainloss=0.58117 validloss=0.56783 f1_score=0.74006 
-    100 0.31s trainloss=0.58098 validloss=0.56686 f1_score=0.74006 
+     10 0.36s trainloss=0.58307 validloss=0.56032 f1_score=0.72607 
+     20 0.31s trainloss=0.58310 validloss=0.56034 f1_score=0.72549 
+     30 0.30s trainloss=0.58318 validloss=0.55890 f1_score=0.72607 
+     40 0.30s trainloss=0.58326 validloss=0.55878 f1_score=0.72848 
+     50 0.30s trainloss=0.58334 validloss=0.56077 f1_score=0.72549 
+     60 0.30s trainloss=0.58307 validloss=0.55931 f1_score=0.72185 
+     70 0.31s trainloss=0.58311 validloss=0.55939 f1_score=0.72185 
+     80 0.30s trainloss=0.58314 validloss=0.56015 f1_score=0.72549 
+     90 0.30s trainloss=0.58299 validloss=0.55951 f1_score=0.72425 
+    100 0.30s trainloss=0.58335 validloss=0.56025 f1_score=0.72185 
 
 
 
