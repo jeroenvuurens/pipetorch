@@ -16,7 +16,7 @@ class Study(optuna.study.Study):
     For more information, check out Optuna Study.
     """
     
-    def __init__(self, study, *target, trainer=None):
+    def __init__(self, study, *target, trainer=None, grid=None):
         """
         Call create_study to instantiate a study
         """
@@ -26,9 +26,11 @@ class Study(optuna.study.Study):
             assert type(t) == str, 'Only str names for targets are currently supported'
         self.target = target
         self.trainer = trainer
+        self.grid = grid
         
     @classmethod
-    def create_study(cls, *target, trainer=None, storage=None, sampler=None, pruner=None, study_name=None, direction=None, directions=None, load_if_exists=False):
+    def create_study(cls, *target, trainer=None, storage=None, sampler=None, pruner=None, 
+                     study_name=None, direction=None, directions=None, load_if_exists=False, grid=None):
         """
         Uses optuna.create_study to create a Study. This extension registers the target metrics for inspection.
         
@@ -42,6 +44,9 @@ class Study(optuna.study.Study):
                 When direction is omitted, loss is set to minimize and all other directions to maximize.
             other arguments: check optuna
         """
+        if grid is not None:
+            assert type(grid) == dict, 'You have to pass a dict to grid'
+            sampler = optuna.samplers.GridSampler(grid)
         if len(target) == 0:
             target = ['loss']
         if len(target) == 1:
@@ -57,7 +62,23 @@ class Study(optuna.study.Study):
         study = optuna.create_study(storage=storage, sampler=sampler, pruner=pruner,
                                     study_name=study_name, direction=direction, directions=directions, 
                                     load_if_exists=load_if_exists)
-        return cls(study, *target, trainer=trainer)
+        return cls(study, *target, trainer=trainer, grid=grid)
+    
+    def ask(self, fixed_distributions=None):
+        fixed_distributions = fixed_distributions or {}
+
+        # Sync storage once every trial.
+        self._storage.read_trials_from_remote_storage(self._study_id)
+
+        trial_id = self._pop_waiting_trial_id()
+        if trial_id is None:
+            trial_id = self._storage.create_new_trial(self._study_id)
+        trial = Trial(self, trial_id)
+
+        for name, param in fixed_distributions.items():
+            trial._suggest(name, param)
+
+        return trial
     
     def optimize(self, func, n_trials=None, timeout=None, catch=(), callbacks=None, 
                  gc_after_trial=False, show_progress_bar=False):
@@ -70,7 +91,7 @@ class Study(optuna.study.Study):
             assert self.trainer is not None, 'You can only pass a func with two arguments when trainer is set'
             func = partial(func, self.trainer)
         super().optimize(func, n_trials=n_trials, timeout=timeout, catch=catch, callbacks=callbacks,
-                      gc_after_trial=gc_after_trial, show_progress_bar=show_progress_bar)
+                      gc_after_trial=gc_after_trial, show_progress_bar=show_progress_bar)        
     
     def __repr__(self):
         return repr(self.validate())
@@ -172,4 +193,12 @@ class Study(optuna.study.Study):
         optuna.visualization.plot_slice(self, params=["hidden"],
                                   target_name="F1 Score")
     
-            
+class Trial(optuna.trial.Trial):
+    def suggest_lr(self, name, low, high):
+        sequence = [ l * 10 for l in range ]
+        
+    def suggest_categorical(self, name, choices=None):
+        try:
+            choices = choices or self.study.grid[name]
+        except: pass
+        return super().suggest_categorical(name, choices)

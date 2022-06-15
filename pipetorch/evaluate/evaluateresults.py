@@ -8,7 +8,8 @@ class EvaluatorResults(pd.DataFrame):
     _metadata = ['evaluator', '_phase', 'df']
     
     @classmethod
-    def from_evaluator(cls, evaluator):
+    def from_evaluator(cls, 
+                       evaluator):
         r = cls()
         r.evaluator = evaluator
         r.df = evaluator.df
@@ -18,7 +19,8 @@ class EvaluatorResults(pd.DataFrame):
     def _constructor(self):
         return EvaluatorResults
 
-    def _copy_meta(self, df):
+    def _copy_meta(self, 
+                   df):
         df = self._constructor(df)
         for m in self._metadata:
             setattr(df, m, getattr(self, m))
@@ -27,7 +29,10 @@ class EvaluatorResults(pd.DataFrame):
     def clone(self):
         return copy.copy(self)
     
-    def __finalize__(self, other, method=None, **kwargs):
+    def __finalize__(self, 
+                     other, 
+                     method=None, 
+                     **kwargs):
         for name in self._metadata:
             object.__setattr__(self, name, getattr(other, name, None))
         return self
@@ -36,7 +41,8 @@ class EvaluatorResults(pd.DataFrame):
         r = self.drop( columns = [ c for c in self.columns if c[0] == '_' ] )
         return super(EvaluatorResults, r).__repr__()
     
-    def _add(self, row):
+    def _add(self, 
+             row):
         for c in row.columns:
             if c not in self.columns:
                 self.insert(len(self.columns), c, np.NaN)
@@ -63,7 +69,16 @@ class EvaluatorResults(pd.DataFrame):
         r.phase = 'test'
         return r
 
-    def _plot_predict(self, pltfunction, label, x=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, **kwargs):
+    def _plot_predict(self, 
+                      pltfunction, 
+                      label, 
+                      x=None, 
+                      xlabel = None, 
+                      ylabel = None, 
+                      title=None, 
+                      interpolate=0, 
+                      df=None, 
+                      **kwargs):
         marker = itertools.cycle((',', '+', '.', 'o', '*')) 
         for _, row in self.iterrows():
             y = row['_predict']
@@ -74,7 +89,8 @@ class EvaluatorResults(pd.DataFrame):
             self.evaluator._plot(pltfunction, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, marker=next(marker), interpolate=interpolate, df=df, label=l, **kwargs)
         plt.legend()
    
-    def _select(self, select=None):
+    def _select(self, 
+                select=None):
         if select is None:
             s = self.results
         elif type(select) is pd.core.series.Series:
@@ -86,29 +102,83 @@ class EvaluatorResults(pd.DataFrame):
         else:
             raise ValueError('Unknown type passed for select')
         return s
-
-    def _plot(self, pltfunction, x, y=None, xlabel = None, ylabel = None, title=None, label=None, loc='best', fig=plt, **kwargs):
+    
+    def _plot(self, 
+              pltfunction, 
+              x, y=None, 
+              xlabel = None, 
+              ylabel = None, 
+              title=None, 
+              loc='best', 
+              fig=plt, 
+              legendargs={}, 
+              **kwargs):
         f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, fig=fig)
-        if label is not None:
-            kwargs['label'] = label
         pltfunction(f.graph_x, f.graph_y, **kwargs)      
         if 'label' in kwargs:
-            fig.legend(loc=loc)
-        
-    def line(self, x, y=None, xlabel = None, ylabel = None, title=None, fig=plt, **kwargs):
-        self._plot(fig.plot, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, fig=fig, **kwargs)
-    
-    def scatter(self, x, y=None, xlabel = None, ylabel = None, title=None, fig=plt, **kwargs):
-        self._plot(fig.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, fig=fig, **kwargs)
-        
-    def line_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, **kwargs):
-        self.evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, fig=fig**kwargs)
+            self.evaluator._legend(f.fig, loc, **legendargs)
 
-    def scatter_metric(self, x, series='phase', y=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, **kwargs):
-        self.evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, title=title, label_prefix=label_prefix, fig=fig, **kwargs)
+    def line(self, 
+             x, 
+             y=None, 
+             xlabel = None, 
+             ylabel = None, 
+             title=None, 
+             fig=plt, 
+             legendargs={}, 
+             **kwargs):
+        self._plot(fig.plot, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, 
+                   fig=fig, legendargs=legendargs, **kwargs)
+    
+    def scatter(self, 
+                x, 
+                y=None, 
+                xlabel = None, 
+                ylabel = None, 
+                title=None, 
+                fig=plt, 
+                legendargs={}, 
+                **kwargs):
+        self._plot(fig.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, 
+                   title=title, fig=fig, legendargs=legendargs, **kwargs)
+        
+    def line_metric(self, 
+                    x, 
+                    series='phase', 
+                    y=None, 
+                    xlabel = None, 
+                    ylabel = None, 
+                    title=None, 
+                    label_prefix='', 
+                    fig=plt,
+                    legendargs={},
+                    **kwargs):
+        self.evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, 
+                                   title=title, label_prefix=label_prefix, fig=fig, legendargs=legendargs, **kwargs)
+
+    def scatter_metric(self, 
+                       x, 
+                       series='phase', 
+                       y=None, 
+                       xlabel = None, 
+                       ylabel = None, 
+                       title=None, 
+                       label_prefix='', 
+                       fig=plt,
+                       legendargs={},
+                       **kwargs):
+        self.evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, 
+                                      title=title, label_prefix=label_prefix, fig=fig, legendargs=legendargs, **kwargs)
 
 class _figure:
-    def __init__(self, results, x=None, y=None, xlabel = None, ylabel = None, title = None, fig=plt ):
+    def __init__(self, 
+                 results, 
+                 x=None, 
+                 y=None, 
+                 xlabel = None, 
+                 ylabel = None, 
+                 title = None, 
+                 fig=plt ):
         self.evaluator = results.evaluator
         self.results = results
         self.x = x
@@ -138,7 +208,8 @@ class _figure:
         return self._x
     
     @x.setter
-    def x(self, value):
+    def x(self, 
+          value):
         self._x = value or self.df._columnx[0]
         
     @property
@@ -146,7 +217,8 @@ class _figure:
         return self._y
     
     @y.setter
-    def y(self, value):
+    def y(self, 
+          value):
         self._y = value or self.evaluator.metrics[0].__name__
         
     @property
@@ -154,7 +226,8 @@ class _figure:
         return self._xlabel
     
     @xlabel.setter
-    def xlabel(self, value):
+    def xlabel(self, 
+               value):
         self._xlabel = value or self.x
 
     @property
@@ -162,7 +235,8 @@ class _figure:
         return self._ylabel
     
     @ylabel.setter
-    def ylabel(self, value):
+    def ylabel(self, 
+               value):
         self._ylabel = value or self.y
 
     @property

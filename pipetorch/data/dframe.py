@@ -131,9 +131,13 @@ class _DFrame:
         except: pass
         return [ self.columns[-1] ]
         
-    def astype(self, dtype, copy=True, errors='raise'):
-        self._pt_dtype = dtype
-        return super().astype(dtype, copy=copy, errors=errors)
+    def dtype(self, dtype):
+        """
+        Lazily executed change of dtype to the data.
+        """
+        r = self._copy_with_indices()
+        r._pt_dtype = dtype
+        return r
         
     @property
     def _columnx(self):
@@ -609,7 +613,8 @@ class _DFrame:
         return self._dset(df, range(len(df)))
         
     def to_databunch(self, dataset=None, batch_size=32, valid_batch_size=None, 
-                     num_workers=0, shuffle=True, pin_memory=False, balance=False, collate=None):
+                     num_workers=0, shuffle=True, pin_memory=False, balance=False, 
+                     collate=None):
         """
         Prepare the data as a Databunch that contains dataloaders for the train, valid and test part.
         batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor.
@@ -1576,12 +1581,6 @@ class GroupedDFrame(DataFrameGroupBy, _DFrame):
     def _constructor_sliced(self):
         return GroupedDSeries
     
-    def astype(self, dtype, copy=True, errors='raise'):
-        """
-        see: pipetorch.DFrame.astype
-        """
-        return DFrame.astype(self, dtype, copy=copy, errors=errors)
-
     def get_group(self, namel, obj=None):
         return self._dframe( super().get_group(name, obj=obj) )
         

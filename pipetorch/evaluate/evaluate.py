@@ -14,7 +14,7 @@ class Evaluator:
         self.df = df
         self.metrics = metrics
         self.reset()   # create a fresh set of results
-    
+        
     def append(self, evaluator):
         r = copy.copy(self)
         r.results = r.results.append(evaluator.results, sort=True, ignore_index=True)
@@ -84,12 +84,28 @@ class Evaluator:
     def __getitem__(self, key):
         return self.results[key]
     
-    def compute_metrics(self, true_y, pred_y):
+    def compute_metrics(self, true_y, pred_y, df=None):
+        df = df or self.df
+        true_y = self._inverse_transform_y( df, true_y )
+        pred_y = self._inverse_transform_y( df, pred_y )
+
         pred_y = self._1d(pred_y)
         if len(self.metrics) > 0:
             return {m.__name__: m(true_y, pred_y) for m in self.metrics}
         return dict()
 
+    def _trunc_float(self, f):
+        if type(f) == float:
+            return np.float64(f)
+        if type(f) == tuple:
+            return repr(tuple([np.float32(v) for v in f]))
+        elif type(f) == list:
+            return repr([np.float32(v) for v in f])
+        elif type(f) == np.ndarray:
+            return repr(np.array([np.float32(v) for v in f]))
+        else:
+            return f
+    
     def _dict_to_df(self, *dicts):
         r = []
         for d in dicts:
@@ -99,24 +115,34 @@ class Evaluator:
     
     def reset(self):
         self.results = EvaluatorResults.from_evaluator(self)
+        self._current_annotation = None
     
-    def optimum(self, *targets, direction=None, directions=None, validation=None, test=None, select=None):
+    def optimum(self, *targets, direction=None, directions=None, validation=None, test=None, **select):
         """
         Finds the optimal value in a training trial, i.e. where the given `optimize` value over the validation
         set is optimal. The optimize metric must be among the metrics that are cached.
         
         When there are multiple target metrics, ties on the first metric are resolved by the second, etc. 
         
-        Arguments:
+        Args:
             *targets: str
                 one or more target metrics that are used to find the optimum
                 if empty, all recorded metrics are used in the order they were registered (usually loss first)
+            
             direction: str ('minimize')
                 'minimize' or 'maximize' to return the resp. lowest or highest score on the validation set
+            
             directions: [ str ] ('minimize')
                 for multi-target training
+            
             validation, test: 
                 for internal use, allows recursive calls to resolve finding a multi-target optimum
+            
+            **select: {}
+                Defines the subset of results that is used to find the optimal epoch. 
+                When empty, the most recent annotation that was used to record metrics is used to
+                define this subset. Alternatively, the key:values in select are used to select the
+                results that are considered.
         
         Returns:
             { metric:value }
@@ -124,9 +150,18 @@ class Evaluator:
         """
         
         if validation is None:
-            validation = self._select(select).valid
+            validation = self._select(**select).valid
+            if len(select) == 0 and self._current_annotation is not None:
+                for key, value in self._current_annotation.items():
+                    validation = validation[validation[key] == value]
         if test is None:
-            test = self._select(select).test if 'test' in self.results.phase.unique() else validation
+            if 'test' in self.results.phase.unique():
+                test = self._select(**select).test  
+                if len(select) == 0 and self._current_annotation is not None:
+                    for key, value in self._current_annotation.items():
+                        test = test[test[key] == value]
+            else:
+                test = validation
         if len(targets) == 0:
             return self.optimum(*self.metrics, direction=direction, directions=directions, validation=validation, test=test)
         if directions is None and direction is None:
@@ -153,19 +188,18 @@ class Evaluator:
         return {t:test.value[test.metric == t].item() for t in targets }
     
     def train_valid_sklearn(self, df):
-            model.fit(df.train_X, df.train_y)
-            valid_pred = df.valid._predict(predict)
-            valid_y = df._inverse_transform_y( df.valid_y )
-            valid_pred = df._inverse_transform_y( valid_pred )
-            metrics = self.compute_metrics(valid_y, valid_pred)
-            for k, v in metrics.items():
-                results_valid[k] += v * len(df.valid_X) / len(df)
-            train_pred = dfk.train._predict(predict)
-            y = dfk._inverse_transform_y( y )
-            y_pred = dfk._inverse_transform_y( y_pred )
-            metrics = self.compute_metrics(y, y_pred)
-            for k, v in metrics.items():
-                results_train[k] += v  * len(dfk.train_X) / len(df)
+        pass
+#             model.fit(df.train_X, df.train_y)
+#             valid_pred = df.valid._predict(predict)
+#             metrics = self.compute_metrics(df.valid_y, valid_pred, df)
+#             for k, v in metrics.items():
+#                 results_valid[k] += v * len(df.valid_X) / len(df)
+#             train_pred = dfk.train._predict(predict)
+#             y = dfk._inverse_transform_y( y )
+#             y_pred = dfk._inverse_transform_y( y_pred )
+#             metrics = self.compute_metrics(y, y_pred)
+#             for k, v in metrics.items():
+#                 results_train[k] += v  * len(dfk.train_X) / len(df)
     
     def run(self, train, predict, model=None, df=None, n_splits=1, stratify=None, **annot):
         if df is None:
@@ -180,15 +214,11 @@ class Evaluator:
             for dfk in df.kfold(n_splits=n_splits, stratify=stratify):
                 train(dfk.train_X, dfk.train_y)
                 y_pred = dfk.valid._predict(predict)
-                y = dfk._inverse_transform_y( y )
-                y_pred = dfk._inverse_transform_y( y_pred )
-                metrics = self.compute_metrics(y, y_pred)
+                metrics = self.compute_metrics(y, y_pred, df=dfk)
                 for k, v in metrics.items():
                     results_valid[k] += v * len(dfk.valid_X) / len(df)
                 y_pred = dfk.train._predict(predict)
-                y = dfk._inverse_transform_y( y )
-                y_pred = dfk._inverse_transform_y( y_pred )
-                metrics = self.compute_metrics(y, y_pred)
+                metrics = self.compute_metrics(y, y_pred, df=dfk)
                 for k, v in metrics.items():
                     results_train[k] += v  * len(dfk.train_X) / len(df)
             results_train['phase'] = 'train'
@@ -197,7 +227,6 @@ class Evaluator:
             self.results = self.results._add(self._dict_to_df(valid_results, annot))
             
     def run_sklearn(self, model, df=None, **annot):
-            
         self.run(model.fit, model.predict, model=model, df=df, **annot)
 
     def _inverse_transform_y(self, df, y):
@@ -205,39 +234,49 @@ class Evaluator:
             return df.inverse_transform_y( y )
         return y
         
-    def _store_predict(self, predict, df, **annot):
+    def _store_predict(self, predict, df, annot={}, **userannot):
         y_pred = df._predict(predict)
-        self._store_metrics(df.y, y_pred, df=df, **annot)        
+        self._store_metrics(df.y, y_pred, df=df, annot=annot, **userannot)        
         
-    def _store_metrics(self, y, y_pred, df=None, **annot):
+    def _store_metrics(self, y, y_pred, df=None, annot={}, **userannot):
         if df is None:
             df = self.df
-        y = self._inverse_transform_y( df, y )
-        y_pred = self._inverse_transform_y( df, y_pred )
-        metrics = self.compute_metrics(y, y_pred)
+        metrics = self.compute_metrics(y, y_pred, df=df)
         for m, value in metrics.items():
-            self._store_metric(m, value, **annot)
+            self._store_metric(m, value, annot=annot, **userannot)
         return metrics
 
-    def _store_metric(self, metric, value, **annot):
-        self.results = self.results._add(self._dict_to_df({'metric':metric, 'value': value}, annot))
+    def _store_metric(self, metric, value, annot={}, **userannot):
+        """
+        Stores the metric values in the DataFrame with results. 
+        There were some issues the logged (user)annotations and float values.
+        The floats are sometimes printed with precision flaws, therefore these are
+        convertet to np.float32. Also list and tuple values of the annotations cause
+        problems, therefore these are converted into Strings. 
+        """
+        
+        self._current_annotation = { key:self._trunc_float(value) for key, value in userannot.items() }
+        annot = { key:self._trunc_float(value) for key, value in annot.items() }
+        self.results = self.results._add(self._dict_to_df({'metric':metric, 'value': value}, annot, self._current_annotation))
             
-    def score_train(self, predict, df=None, **annot):
+    def score_train(self, predict, df=None, annot={}, **userannot):
         if df is None:
             df = self.df
-        self._store_predict(predict, df.train, phase='train', **annot)
+        self._store_predict(predict, df.train, phase='train', annot=annot, **userannot)
             
-    def score_valid(self, predict, df=None, **annot):
+    def score_valid(self, predict, df=None, annot={}, **userannot):
         if df is None:
             df = self.df
         if len(df.valid_X) > 0:
-            self._store_predict(predict, df.valid, phase='valid', **annot)
+            self._current_annotation = annot
+            self._store_predict(predict, df.valid, phase='valid', annot=annot, **userannot)
 
-    def score_test(self, predict, df=None, **annot):
+    def score_test(self, predict, df=None, annot={}, **userannot):
         if df is None:
             df = self.df
         if len(df.test_X) > 0:
-            self._store_predict(predict, df.test, phase='test', **annot)
+            self._current_annotation = annot
+            self._store_predict(predict, df.test, phase='test', annot=annot, **userannot)
                 
     def _order(self, X):
         return X[:, 0].argsort(axis=0)
@@ -348,13 +387,25 @@ class Evaluator:
     def _figure(self, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, interpolate=0, df=None, fig=plt):
         return _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df, fig=fig)
     
-    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='best', fig=plt, **kwargs):
-        #fig = plt.figure()
+    def _legend(self, fig, loc, **legendargs):
+        """
+        A legend is only drawn is labels are added to the figure.
+        This fuctions adds the possibility to use loc=right to put the 
+        legend outside the figure for readability.
+        """
+        if loc == 'right':
+            legendargs['bbox_to_anchor'] = (1.04, 1)
+            legendargs['loc'] = 'upper left'
+            plt.subplots_adjust(right=0.75)
+        else:
+            legendargs['loc'] = loc
+        fig.legend(**legendargs)
+    
+    def _plot(self, pltfunction, x=None, y=None, xlabel = None, ylabel = None, sort=False, title=None, marker=None, interpolate=0, df=None, loc='best', fig=plt, legendargs={}, **kwargs):
         f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, sort=sort, interpolate=interpolate, df=df, fig=fig)
         pltfunction(f.graph_x, f.graph_y, marker=marker, **kwargs)
         if 'label' in kwargs:
-            fig.gca().legend(loc=loc)
-        #fig.show()
+            self._legend(f.fig, loc, **legendargs)
     
     def line(self, x=None, y=None, xlabel = None, ylabel = None, title=None, interpolate=0, df=None, loc='best', fig=plt, **kwargs):
         plot = fig.plot if fig else plt.plot
@@ -364,7 +415,7 @@ class Evaluator:
         plot = fig.scatter if fig else plt.scatter
         self._plot(plot, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, interpolate=interpolate, df=df, loc=loc, fig=fig, **kwargs)
        
-    def _select(self, select):
+    def _select(self, select=None, **kwargs):
         if select is None:
             s = self.results
         elif type(select) is pd.core.series.Series:
@@ -373,12 +424,13 @@ class Evaluator:
             s = select
         elif type(select) is str:
             s = self.results[self.results.phase == select]
-        elif type(select) == dict:
-            s = self.results
+        elif type(select) is dict:
             for key, value in select.items():
-                s = s.loc[s[key] == value].copy()
+                s = self.results[self.results[key] == value]
         else:
             raise ValueError('Unknown type passed for select')
+        for key, value in kwargs.items():
+            s = s.loc[s[key] == value].copy()
         return s
 
     def _groups(self, selection, series='phase'):
@@ -395,7 +447,7 @@ class Evaluator:
             g = label or (label_prefix + str(g) if unique_groups > 1 else ylabel)
             d.scatter(x, y='value', xlabel=xlabel, ylabel=y, title=title, label=g, fig=fig, **kwargs)
     
-    def line_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, fig=None, **kwargs):
+    def line_metric(self, x, y=None, series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', label=None, fig=None, legendargs={}, **kwargs):
         y = y or self.metrics[0].__name__
         selection = self._select(select)
         selection = selection[selection.metric == y]

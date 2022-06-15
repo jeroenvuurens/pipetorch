@@ -52,10 +52,14 @@ class TransformableDataset(Dataset):
                 x, y = t(x, y)
             else:
                 x = t(x)
-        if self._dtype is None or not np.issubdtype(self._dtype, np.number):
+        self.debugx = x
+        if self._dtype is None:
             x = x.type(torch.FloatTensor)
-        else:
-            x = x.type(self._dtype)
+        elif self._dtype:
+            if np.issubdtype(self._dtype, np.number):
+                x = x.type(self._dtype)
+            else:
+                x = x.type(torch.FloatTensor)
        
         return x, y
     

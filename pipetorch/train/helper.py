@@ -218,8 +218,9 @@ class tqdm_trainer(tqdm):
         
         batches = len(train_dl) * train_dl.batch_size * epochs
         batches += len(valid_dl) * valid_dl.batch_size * reports
-        if test_dl is not None:
+        try:
             batches += len(test_dl) * test_dl.batch_size * reports
+        except: pass
         return batches
 
 def to_numpy(arr):

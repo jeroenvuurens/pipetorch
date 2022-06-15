@@ -199,7 +199,23 @@ class Databunch:
     def predict_test(self, model, device=None):
         return self.predict(model, self.test_dl, device=device)
 
-    def sample(self, device=None):
+    def sample(self, device=None, valid=False, test=False):
+        """
+        returns a single batch from the DataLoader.
+        
+        Args:
+            device: torch.device (None)
+                transfers the data to the given device, e.g. db.sample(torch.device('cuda:0'))
+            
+            valid: bool (False)
+                retrieves a sample from the validation set
+                
+            test: bool (False)
+                retrieves a sample from the test set
+                
+        Returns: (tensor, tensor)
+            containing the input and output features for a retrieved batch from the dataset
+        """
         arrays = next(iter(self.train_dl))
         if device is not None:
             arrays = [ a.to(device) for a in arrays ]

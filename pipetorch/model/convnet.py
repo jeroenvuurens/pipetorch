@@ -1,7 +1,7 @@
-from torchvision.models import *
+#from torchvision.models import *
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+#import torch.nn.functional as F
 
 def split_int_tuple(value, hdefault=None, vdefault=None):
     try:
@@ -52,7 +52,11 @@ class ConvNet(nn.Module):
             a function that is called on X prior to feeding the input to the first layer.
             
         batchnorm: bool (False)
-            if True, then nn.BatchNorm2d are added to every concolutional layer
+            if True, then nn.BatchNorm2d are added to every convolutional layer
+            
+        dropout: float (False)
+            if True, then nn.Dropout2d are added at the end of every convolutional layer.
+            Atm this cannot be combined with batchnorm (then dropout is not used)
             
         linear: int or [int] ([])
             the convolutional network is always finished by one or more linear layers. The default adds
@@ -78,7 +82,7 @@ class ConvNet(nn.Module):
     """
     
     def __init__(self, *layers, size=224, kernel_size=3, stride=1, linear=[], padding=None, pool_size=2, 
-                 pool_stride=2, preprocess=None, batchnorm=False, num_classes=1, final_activation=None,
+                 pool_stride=2, preprocess=None, batchnorm=False, dropout=None, num_classes=1, final_activation=None,
                  post_forward=None):
         super().__init__()
         self.preprocess = preprocess
@@ -97,6 +101,13 @@ class ConvNet(nn.Module):
                     nn.BatchNorm2d(o),
                     nn.ReLU(),
                     nn.MaxPool2d(kernel_size=(hpool_size, vpool_size), stride=(hpool_stride, vpool_stride)))
+            elif dropout:
+                layer = nn.Sequential( 
+                    nn.Conv2d(i, o, kernel_size=(hkernel, vkernel), stride=(hstride, vstride), padding=(hpadding, vpadding)),
+                    nn.ReLU(),
+                    nn.MaxPool2d(kernel_size=(hpool_size, vpool_size), stride=(hpool_stride, vpool_stride)),
+                    nn.Dropout2d(p=dropout)
+                )
             else:
                 layer = nn.Sequential( 
                     nn.Conv2d(i, o, kernel_size=(hkernel, vkernel), stride=(hstride, vstride), padding=(hpadding, vpadding)),

@@ -4,6 +4,7 @@ from tqdm.notebook import tqdm
 #from torch.optim.lr_scheduler import _LRScheduler
 import matplotlib.pyplot as plt
 #from .train_metrics import loss
+import numpy as np
 from .helper import Plot
 import sys
 from math import log, exp
@@ -83,13 +84,12 @@ class tuner:
                     except: pass
                     sloss.append(loss)
 
-                    try:
-                        if i > len(self.lrvalues) / 4 and loss > self.diverge * min_loss:
-                            #print("Stopping early, the loss has diverged")
-                            break
-                        min_loss = min(min_loss, loss)
-                    except:
-                        min_loss = loss
+                    min_index = np.argmin(sloss) + 1
+                    maxx = max(sloss[:min_index])
+                    minn = min(sloss[:min_index])
+                    if i > len(self.lrvalues) / 4 and loss > maxx * 1.1 and loss > maxx:
+                        #print("Stopping early, the loss has diverged")
+                        break
                     p.replot( graphx, sloss )
 
     def run_multi( self, param2_values, param2_update ):

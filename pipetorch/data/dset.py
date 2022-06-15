@@ -327,10 +327,11 @@ class _DSet:
         """
         
         import torch
-        if self._dtype is None:
+        if self._pt_dtype is None:
             return torch.tensor(self.X).type(torch.FloatTensor)
-        else:
-            return torch.tensor(self.X)
+        if self._pt_dtype and np.issubdtype(self._pt_dtype, np.number):
+            return torch.tensor(self.X.astype(self._pt_dtype))
+        return torch.tensor(self.X)
 
     @property
     def y_tensor(self):
@@ -342,8 +343,10 @@ class _DSet:
         """
 
         import torch
-        if self._dtype is None:
+        if self._pt_dtype is None:
             return torch.tensor(self.y).type(torch.FloatTensor)
+        if self._pt_dtype and np.issubdtype(self._pt_dtype, np.number):
+            return torch.tensor(self.y.astype(self._pt_dtype))
         else:
             return torch.tensor(self.y)
  
@@ -452,15 +455,15 @@ class _DSet:
             A PyTorch DataSet over X_tensor and y_tensor
         """
         self._pt_dataset = dataset or self._pt_dataset
-        if self._pt_dtype is str:
+        if self._pt_dataset is not None:
+            r = self._pt_dataset(*self.tensors)
+        elif self._pt_dtype is str or self._pt_dtype == False:
             r = NumpyDataset(self.X, self.y)
-        elif self._pt_dataset is None:
+        else:
             from torch.utils.data import TensorDataset
             r = TensorDataset(*self.tensors)
-        else:
-            r = self._pt_dataset(*self.tensors)
         if self._pt_transforms is not None:
-            r = TransformableDataset(r, self._dtype, *self._pt_transforms)
+            r = TransformableDataset(r, self._pt_dtype, *self._pt_transforms)
         return r
     
     def to_dataloader(self, batch_size=32, shuffle=True, collate_fn=None, **kwargs):
@@ -814,10 +817,6 @@ class GroupedDSet(DataFrameGroupBy, _DSet):
         for group, subset in super().__iter__():
             yield group, selfl._copy_meta(subset)
             
-    
-    def astype(self, dtype, copy=True, errors='raise'):
-        DSet.astype(self, dtype, copy=copy, errors=errors)
-
     def get_group(self, name, obj=None):
         return self._dset( super().get_group(name, obj=obj) )
         

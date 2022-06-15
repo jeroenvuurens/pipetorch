@@ -11,6 +11,7 @@ import numpy as np
 import math
 #from tqdm.notebook import tqdm
 from ..evaluate.evaluate import Evaluator
+from ..helper import run_magic
 from torch.optim.lr_scheduler import OneCycleLR, ConstantLR
 from .tuner import *
 from .helper import nonondict, tqdm_trainer
@@ -50,6 +51,19 @@ class ordered_dl:
         if exc_type is not None:
             return False
 
+POST_FORWARD = {nn.L1Loss:None, 
+                nn.MSELoss:None, 
+                nn.CrossEntropyLoss:lambda y: torch.argmax(y, dim=1),
+                nn.NLLLoss: lambda y: torch.argmax(y, dim=1), 
+                nn.PoissonNLLLoss: lambda y: torch.argmax(y, dim=1), 
+                nn.GaussianNLLLoss: lambda y: torch.argmax(y, dim=1), 
+                nn.KLDivLoss: lambda y: torch.argmax(y, dim=1), 
+                nn.BCELoss: lambda y: torch.round(y), 
+                nn.BCEWithLogitsLoss: lambda y: torch.round(y), 
+                nn.HuberLoss: None,
+                nn.SmoothL1Loss: None
+               }
+        
 class Trainer:
     """
     A general purpose trainer for PyTorch.
@@ -121,30 +135,63 @@ class Trainer:
             DataFrame, to combine the results of different training
             sessions.
             
+        post_forward: func (None)
+            For some projects, the loss function requires a different output than
+            the metrics that are being used. 
+
+            Example 1: For nn.BCELoss() the target value
+            must be a likelihood, while accuracy_score requires a class label. 
+            The model returns a likelihood with an nn.Sigmoid() on the ouput layer, 
+            but the metrics can only be computed if the likelihood is converted into 
+            a predicted label (e.g. torch.round() ). 
+
+            Example 2: nn.CrossEntropyLoss() requires a distribution over the possible labels
+            while multi-class evaluation matrics require the predicted class. This is commonly
+            computed with torch.argmax(y, dim=1).
+
+            To allow for this behavior, the trainer can use a post_forward fuction inbetween
+            loss and metrics. It will attempt to use a post_forward in the following order: 
+            - a function passed here
+            - a post_forward method that is added to the model
+            - infer a post_forward based on the loss function. 
+
+            For inferring a post_forward based on
+            the loss function, there is a dictionary in train.POST_FORWARD that covers the 
+            most commonly used loss functions.
+
+            If no post_forward is found, and the loss function is unknown, then None is used
+            and a warning is printed. Pass post_forward=False to suppress this warning.
+            
         debug: bool (False)
             stores X, y and y_pred in properties so that they can be inspected
             when an error is thrown.
     """
-    
-    def __init__(self, model, loss, *data, metrics = [], 
-                 optimizer=AdamW, optimizer_params=None, 
-                 scheduler=None, scheduler_params=None,
-                 weight_decay=None, momentum=None, gpu=False,
-                 random_state=None, evaluator=None, 
-                 debug=False, **kwargs):
+    def __init__(self, 
+                 model, 
+                 loss, 
+                 *data, 
+                 metrics = [], 
+                 optimizer=AdamW, 
+                 optimizer_params=None, 
+                 scheduler=None, 
+                 scheduler_params=None,
+                 weight_decay=None, 
+                 momentum=None, 
+                 gpu=False,
+                 random_state=None, 
+                 evaluator=None, 
+                 debug=False,
+                 post_forward=None):
         
         # the amount of epochs in a cycle, 
         # validation is only done at the end of each cycle
-        self.cycle = 1  
         self.loss = loss
         self.random_state = random_state
         self.gpu(gpu)
         self.set_data(*data)
         self._model = model
         self._debug = debug
-        try:
-            self.post_forward = model.post_forward
-        except: pass
+        self._set_post_forward(post_forward, model, loss)
         self.optimizer = optimizer
         self.optimizer_params = optimizer_params
         self.scheduler = scheduler
@@ -199,6 +246,26 @@ class Trainer:
                 except TypeError:
                     raise TypeError('The third data source must be iterable, preferably a DataLoader that provide an X and y')
 
+    def _set_post_forward(self, post_forward, model, loss):
+        if post_forward:
+            self.post_forward = post_forward
+            return
+        if post_forward == False:
+            self.post_forward = lambda y:y
+        try:
+            self.post_forward = model.post_forward
+            return
+        except:
+            self.post_forward = lambda y:y
+            for l, func in POST_FORWARD.items():
+                try:
+                    if loss.__class__ == l:
+                        if func:
+                            self.post_forward = func
+                        return
+                except: pass
+        print('Warning, assuming no post_forward is needed (unknown loss function). Pass post_forward=False to suppress this warning.')
+                    
     def reset_evaluator(self):
         try:
             del self._evaluator
@@ -279,6 +346,10 @@ class Trainer:
             self._metrics = value
         except:
             self._metrics = [] if value is None else [value] 
+        
+    @property
+    def epochidstr(self):
+        return f'{self.epochid:>{self._epochspaces}}' if self.cycle >= 1 else f'{self.subepochid:{self._epochspaces+3}.2f}'
         
     @property
     def databunch(self):
@@ -542,14 +613,22 @@ class Trainer:
             else:
                 schedulerclass = self._scheduler_class
             if schedulerclass == ConstantLR:
-                factor = (self.min_lr / self.max_lr) ** (1 / self._scheduler_epochs)
+                min_lr = self.min_lr
+                max_lr = self.max_lr
+                try:
+                    min_lr = min_lr[0]  # working with parameter groups
+                except: pass
+                try:
+                    max_lr = max_lr[0]  # working with parameter groups
+                except: pass
+                factor = (min_lr / max_lr) ** (1 / self._scheduler_epochs)
                 self._scheduler = ConstantLR(self.optimizer, factor,
                                   self._scheduler_epochs, **self.scheduler_params)
             elif schedulerclass == OneCycleLR:
                 scheduler_params = self.scheduler_params
-                scheduler_params['total_steps'] = math.ceil(len(self.train_dl) * self.cycle)
+                total_steps = math.ceil(len(self.train_dl) * self.cycle)
                 self._scheduler = OneCycleLR(self.optimizer, 
-                                  self.min_lr, **scheduler_params) 
+                                  self.min_lr, total_steps=total_steps, **scheduler_params) 
             else:
                 try:
                     self._scheduler = schedulerclass(self.optimizer, 
@@ -676,9 +755,7 @@ class Trainer:
         try:
             del self._optimizer
         except: pass
-        try:
-            del self._evaluator
-        except: pass
+        self.epochid = 0
     
     def parameters(self):
         """
@@ -707,12 +784,10 @@ class Trainer:
 
         # Applies fn recursively to every submodule see: https://pytorch.org/docs/stable/generated/torch.nn.Module.html
         self.model.apply(fn=weight_reset)
+        self.epochid = 0
         try:
             del self._optimizer
-        except: pass
-        try:
-            del self._evaluator
-        except: pass        
+        except: pass       
                 
     def forward(self, *X):
         """
@@ -752,7 +827,7 @@ class Trainer:
             the model and optionally a post_forward for classification
             tasks
         """
-        return self.post_forward(self.forward(*X))
+        self.post_forward(self.forward(*X))
 
     def post_forward(self, y):
         """
@@ -769,12 +844,7 @@ class Trainer:
             this returns the the results calling post_forward, otherise,
             it will just return pred_y
         """
-        post_forward = getattr(self.model, "post_forward", None)
-        if callable(post_forward):
-            y = self.model.post_forward(y)
-            if self._debug:
-                self.lastypfw = y
-        return y
+        raise ValueError('The Trainer was somehow not initialized with a post_forward')
 
     def list_commits(self):
         """
@@ -794,7 +864,7 @@ class Trainer:
         """        
         model_state = copy.deepcopy(self.model.state_dict())
         optimizer_state = copy.deepcopy(self.optimizer.state_dict())
-        self._commit[label] = (model_state, optimizer_state, self.epochid, self.evaluator.results.clone())
+        self._commit[label] = (model_state, optimizer_state, self.subepochid, self.evaluator.results.clone())
 
     def _model_filename(self, folder=None, filename=None, extension=None):
         if folder is None:
@@ -919,6 +989,8 @@ class Trainer:
         """
         if label in self._commit:
             model_state, optimizer_state, self.epochid, self.evaluator.results = self._commit[label]
+            self.evaluator.results = self.evaluator.results[self.evaluator.results.epoch <= self.epochid]
+            self.epochid = math.ceil(self.epochid)            
             self.model.load_state_dict(model_state)
             self.del_optimizer()            
             self.optimizer.load_state_dict(optimizer_state)  
@@ -957,7 +1029,7 @@ class Trainer:
         else:
             print(f'commit point {label} not found')
 
-    def _loss_xy(self, *X, y=None, debug=False):
+    def _loss_xy(self, *X, y=None):
         """
         Computes predictions for the given X.
         
@@ -975,7 +1047,30 @@ class Trainer:
         if self._debug:
             self.lasty = y
         y_pred = self.forward(*X)
-        return self.loss(y_pred, y), self.post_forward(y_pred)
+        if self._debug:
+            self.lastyfw = y_pred
+        loss = self.loss(y_pred, y)
+        return loss, y_pred 
+    
+    def _loss_forward_xy(self, *X, y=None):
+        """
+        Computes predictions for the given X.
+        
+        Arguments:
+            *X: tensor
+                inputs that are used by the forward of the model
+            y: tensor
+                ground truth labels, the predictions are compared against
+        
+        Returns: (float, tensor)
+            a tuple with the loss for the predictions on X,
+            and a tensor with the predicted values
+        """
+        loss, y_pred = self._loss_xy(*X, y=y)
+        y_pred = self.post_forward(y_pred)
+        if self._debug:
+            self.lastypfw
+        return loss, y_pred 
     
     def loss_dl(self, dl):
         """
@@ -1067,7 +1162,7 @@ class Trainer:
 
         with self.eval_mode:
             for *X, y in self.valid_Xy:
-                loss, y_pred = self._loss_xy(*X, y=y)
+                loss, y_pred = self._loss_forward_xy(*X, y=y)
                 epochloss += loss.item() * len(y_pred)
                 n += len(y_pred)
                 epoch_y_pred.append(to_numpy(y_pred))
@@ -1077,13 +1172,36 @@ class Trainer:
             epochloss /= n
             epoch_y = np.concatenate(epoch_y, axis=0)
             epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
-            metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, phase='valid', epoch=self.epochid, **log)
-            self.evaluator._store_metric('loss', epochloss, phase='valid', epoch=self.epochid, **log)
+            metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, 
+                                                    annot={'phase':'valid', 'epoch':self.subepochid}, **log)
+            self.evaluator._store_metric('loss', epochloss, 
+                                         annot={'phase':'valid', 'epoch':self.subepochid}, **log)
         return epochloss, metrics
+
+    def test(self):
+        """
+        Compute the metrics over the test set. 
+        Requires a test_dl or databunch with a test_dl to be set on this Trainer.
+        
+        Returns: {}
+            a dictionary with the computed metrics over the testset
+        """
+        epoch_y_pred = []
+        epoch_y = []
+
+        with self.eval_mode:
+            for *X, y in self.test_Xy:
+                loss, y_pred = self._loss_forward_xy(*X, y=y)
+                epoch_y_pred.append(to_numpy(y_pred))
+                epoch_y.append(to_numpy(y))
+            epoch_y = np.concatenate(epoch_y, axis=0)
+            epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
+        return self.evaluator.compute_metrics(epoch_y, epoch_y_pred)
     
     def _test(self, pbar=None, log={}):
         """
         Run the test set (in evaluation mode) and store the loss and metrics into the evaluator.
+        Is a helper function of train().
         
         Arguments:
             pbar: tqdm progress bar (None)
@@ -1102,7 +1220,7 @@ class Trainer:
 
         with self.eval_mode:
             for *X, y in self.test_Xy:
-                loss, y_pred = self._loss_xy(*X, y=y)
+                loss, y_pred = self._loss_forward_xy(*X, y=y)
                 epochloss += loss.item() * len(y_pred)
                 n += len(y_pred)
                 epoch_y_pred.append(to_numpy(y_pred))
@@ -1112,8 +1230,9 @@ class Trainer:
             epochloss /= n
             epoch_y = np.concatenate(epoch_y, axis=0)
             epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
-            metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, phase='test', epoch=self.epochid, **log)
-            self.evaluator._store_metric('loss', epochloss, phase='test', epoch=self.epochid, **log)
+            metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, 
+                                                    annot={'phase':'test', 'epoch':self.epochid}, **log)
+            self.evaluator._store_metric('loss', epochloss, annot={'phase':'test', 'epoch':self.epochid}, **log)
         return epochloss, metrics
             
     def train_batch(self, *X, y=None):
@@ -1145,10 +1264,7 @@ class Trainer:
         self._start_time = timeit.default_timer()
         return timeit.default_timer() - t
     
-    def cross_validate(self, epochs, lr, cycle=None, data=None,
-              optimizer=None, optimizer_params=None, scheduler=False, 
-              scheduler_params=None, weight_decay=None, momentum=None,
-              earlystop=False, silent=True, test=True, reset_evaluator=True):
+    def cross_validate(self, epochs, lr, cycle=1, silent=True, test=True, earlystop=False, reset_evaluator=True, log={}):
         """
         Only works with a Databunch from a DFrame that is configured for n-fold cross validation. 
         The model is trained n times (reinitializing every time), and the average metric is reported 
@@ -1160,70 +1276,67 @@ class Trainer:
                 convergence requirements are met.
             lr: float, (float, float) or [float, float]
                 the learning rate to use for the optimzer. See lr for train().
-            cycle: int
+            cycle: int (1)
                 the number of epochs in a cycle. At the end of each cycle the validation is run.
-            data: generator (train_dl, valid_dl, test_dl) or a PipeTorch Databunch (None)
-                if None, the current databunch is used. On databunches iter_folds() is called to iterate
-                over the dataloaders that are constructed on a DFrame that was configured with folds().
-                Alternatively, you may pass an iterable that supplies (train_dl, valid_dl, test_dl)
-            for the other parameters, see train()
+            earlystop: int (False)
+                terminates training when the validation loss has not improved for the last
+                earlystop cycles.
+            test: bool (False)
+                run the test set every cycle (used for n-fold cross validation)
+            log: {}
+                see train(log), the cross validator extends the log with a folds column.
+                
         """
         from ..data import Databunch
         
-        cycle = cycle or self.cycle
-        optimizer = optimizer or self._optimizer_class
-        scheduler = scheduler or self._scheduler_class
-        optimizer_params = optimizer_params or self.optimizer_params
-        scheduler_params = scheduler_params or self.scheduler_params
-        weight_decay = weight_decay or self.weight_decay
-        momentum = momentum or self.momentum
-        pbar = None
+        data = self.databunch.iter_folds()
+        folds = self.databunch.folds
+        test_dl = self.test_dl if test else None
+        pbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, test_dl, folds=folds)
         if reset_evaluator:
             self.reset_evaluator()
         
-        if data is None:
-            data = self.databunch
-        if type(data) == Databunch:
-            folds = data.folds or 1
-            data = data.iter_folds()
-        else:
-            folds = len(data)
-        data = iter(data)
         
-        def run(trial):
-            nonlocal pbar
-            global t
-            self.reset_model()
-            train_dl, valid_dl, test_dl = next(data)
-            if pbar is None:
-                pbar = tqdm_trainer(epochs, cycle, train_dl, valid_dl, test_dl, folds=folds)
-            self.t = Trainer(self.model, self.loss, train_dl, valid_dl, test_dl, evaluator=self.evaluator,
-                        optimizer=optimizer, optimizer_params=optimizer_params,
-                        scheduler=scheduler, scheduler_params=scheduler_params,
-                        weight_decay=weight_decay, momentum=momentum, gpu=self._gpu,
-                        random_state=self.random_state, debug=self._debug, earlystop=earlystop)
-            self.t.train(epochs, lr, cycle=cycle, pbar=pbar, log={'fold':trial.number}, test=test, silent=silent)
-            return self.t.optimum(select={'fold':trial.number})
+        def run(trainer, trial):
+            trainer.reset_model()
+            _ = next(data)
+            log['fold'] = trial.number
+            trainer.train(epochs, lr, cycle=cycle, pbar=pbar, log=log, 
+                          test=test, silent=silent, earlystop=earlystop)
+            return trainer.optimum(select=log)
         
         return self.optimize(run, n_trials=folds)
     
     def optimize(self, func, n_trials=None, timeout=None, catch=(), callbacks=None, 
-                 gc_after_trial=False, show_progress_bar=False):
+                 gc_after_trial=False, show_progress_bar=False, grid=None):
         """
         Run n_trials on the given func to optimize settings and hyperparameters. This uses an 
         extension to the Optuna library tio create a study. This extension allows to define your
-        trial func(trainer, trial) so that you can reuse the configured trainer. For the 
-        other arguments, see Optuna.Study.optimize
+        trial func(trainer, trial) so that you can reuse the configured trainer. 
+        
+        Args:
+            func: callable
+                a function that is called to perform a trail and receives the Trainer and trial object.
+                
+            n_trials: int (None)
+                number of trails to perform
+
+            grid: dict (None)
+                when grid is not None, a grid search is performed over the given values, e.g.
+                grid={lr:[1e-3, 1e-2], batch-size=[32, 64]}
+
+            For the other arguments, see Optuna.Study.optimize
         
         Returns: Study (extension to Optuna's Study)
             That contains the collected metrics for the trials
         """
-        study = self.study()
+        assert grid is None or n_trials is None, 'You cannot use Grid Search together with n_trials'
+        study = self.study(grid=grid)
         study.optimize(func, n_trials=n_trials, timeout=timeout, catch=catch, callbacks=callbacks,
                       gc_after_trial=gc_after_trial, show_progress_bar=show_progress_bar)
         return study
     
-    def train(self, epochs, lr=None, cycle=None, save=None, 
+    def train(self, epochs, lr=None, cycle=1, save=None, 
               optimizer=None, optimizer_params=None, scheduler=False, 
               scheduler_params=None, weight_decay=None, momentum=None, 
               save_lowest=False, save_highest=False, silent=False, pbar=None,
@@ -1246,7 +1359,7 @@ class Trainer:
                     use a linearly decaying learning rate
                     between an upper and lower bound. 
             
-            cycle: int or float (None)
+            cycle: int or float (1)
                 Configures after how many epochs there are in a cycle. 
                 the loss and metrics are logged and reported at the end of every cycle.
                 For training on very large training sets, if cycle is set to a whole integer
@@ -1295,16 +1408,24 @@ class Trainer:
                 saved/committed as 'lowest' and can be checked out by calling 
                 lowest() on the trainer.
                 
+            log: {}
+                At the end of every cycle, the loss and metrics over the train, valid
+                and optionally test sets are computed and stored in a result set. The
+                values passed in log are stored along with this metrics. Typically, this
+                is used with a single trainer that is reused for several 'trials' 
+                to analyze how the results changes. Several functions on the resultset
+                allow to 'select' results based on these settings, are generate plots
+                with these settings as 'series'.
+                
             test: bool (False)
                 run the test set every cycle (used for n-fold cross validation)
         """
-        
+        self.cycle = cycle
         self._scheduler_start = self.epochid # used by OneCycleScheduler
         self._scheduler_epochs = epochs
         self.scheduler_params = scheduler_params
         self.del_optimizer()
         self.lr = lr or self.lr
-        self.cycle = cycle or self.cycle
         if weight_decay is not None and self.weight_decay != weight_decay:
             self.weight_decay = weight_decay
         if momentum is not None and self.momentum != momentum:
@@ -1321,52 +1442,59 @@ class Trainer:
         self._epochspaces = int(math.log(maxepoch)/math.log(10)) + 1
         if pbar is None:
             if test:
-                self.currentpbar = tqdm_trainer(epochs, self.cycle, self.train_dl, self.valid_dl, self.test_dl, silent=silent)
+                self.currentpbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, self.test_dl, silent=silent)
             else:
-                self.currentpbar = tqdm_trainer(epochs, self.cycle, self.train_dl, self.valid_dl, silent=silent)
+                self.currentpbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, silent=silent)
         else:
             self.currentpbar = pbar
         self._time()
-        if self.cycle < 1:
+        self._log_reset()
+        check_scheduler = self.scheduler.__class__ == OneCycleLR
+        if cycle < 1:
             log_batches = np.linspace(0, len(self.train_dl), int(round(1 / self.cycle)) + 1)[1:]
             log_batches = { int(round(b))-1 for b in log_batches }
         else:
             log_batches = { len(self.train_dl)-1 }
-        self._log_reset()
-        log_next_epoch = (self.epochid + self.cycle) if self.cycle >= 1 else (self.epochid + 1)
+        log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
         for i in range(epochs):
-            self.epochid += 1
-            log_this_epoch = self.epochid == log_next_epoch
             with self.train_mode:
                 for batch, (*X, y) in enumerate(self.train_Xy):
                     #print(self.cycle, len(self.train_dl), batch, log_batches, log_next_epoch, log_this_epoch)
-                    if self.scheduler._step_count == self.scheduler.total_steps:
+                    if check_scheduler and self.scheduler._step_count == self.scheduler.total_steps:
                         self.del_scheduler()
                         self.scheduler
                     loss, y_pred = self.train_batch(*X, y=y)
                     self.scheduler.step()
                         
-                    try:
-                        y_pred = model.post_forward(y_pred)
-                    except: pass
                     self.currentpbar.update(self.train_dl.batch_size)
-                    if log_this_epoch:
+                    #print(self.epochid, log_next_epoch, batch, log_batches)
+                    if log_next_epoch == self.epochid:
+                        y_pred = self.post_forward(y_pred)
+                        if self._debug:
+                            self.lastypfw = y_pred                          
                         self._log_increment(loss, y, y_pred)
-                        if (batch) in log_batches:
+                        if batch in log_batches:
+                            if batch == len(self.train_dl) - 1:
+                                batch = 0
+                                self.epochid += 1
+                                log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
+                            self.subepochid = self.epochid + batch / len(self.train_dl)
                             validloss, validmetrics = self.validate(pbar = self.currentpbar, log=log)
-                            self._log(batch, validloss, validmetrics, log, silent)
+                            self._log(validloss, validmetrics, log, silent)
                             if save_lowest is not None and save_lowest:
                                 if self.lowest_score is None or validloss < self.lowest_score:
                                     self.lowest_score = validloss
                                     self.commit('lowest')
-                                    
-                if log_this_epoch:
-                    log_next_epoch = (self.epochid + self.cycle) if self.cycle >= 1 else (self.epochid + 1)
-                    if save is not None and save:
-                        self.commit(f'{save}-{self.epochid}')
-                        
-                    if self._check_early_termination(validloss, targetloss, earlystop, silent):
-                        break
+                            if test:
+                                self._test(pbar=self.currentpbar, log=log)
+
+                            if save is not None and save:
+                                self.commit(f'{save}-{self.epochid}')
+
+                            if self._check_early_termination(validloss, targetloss, earlystop, silent):
+                                break
+                    elif batch == len(self.train_dl) - 1:
+                        self.epochid += 1
         if pbar is None:
             try:
                 self.currentpbar.close()    
@@ -1384,15 +1512,13 @@ class Trainer:
         self._epoch_y_pred.append(to_numpy(y_pred))
         self._epoch_y.append(to_numpy(y))
         
-    def _log(self, batch, validloss, validmetrics, log, silent):
-        batch = (batch / len(self.train_dl)) if self.cycle < 1 else ""
-        epochid = self.epochid+batch if self.cycle < 1 else self.epochid
+    def _log(self, validloss, validmetrics, log, silent):
         self._epochloss /= self._n
         self._epoch_y = np.concatenate(self._epoch_y, axis=0)
         self._epoch_y_pred = np.concatenate(self._epoch_y_pred, axis=0)
         metrics = self.evaluator._store_metrics(self._epoch_y, self._epoch_y_pred, 
-                                                phase='train', epoch=epochid, **log)
-        self.evaluator._store_metric('loss', self._epochloss, phase='train', epoch=epochid, **log)
+                                                annot={'phase':'train', 'epoch':self.subepochid}, **log)
+        self.evaluator._store_metric('loss', self._epochloss, annot={'phase':'train', 'epoch':self.subepochid}, **log)
         if not silent:
             reportmetric = ''
             for m in self.metrics:
@@ -1401,8 +1527,7 @@ class Trainer:
                 try:
                     reportmetric += f'{m}={value:.5f} '
                 except: pass
-            epochid = f'{epochid:>{self._epochspaces}}' if self.cycle >= 1 else f'{epochid:{self._epochspaces+3}.2f}'
-            print(f'{epochid} {self._time():.2f}s trainloss={self._epochloss:.5f} validloss={validloss:.5f} {reportmetric}')
+            print(f'{self.epochidstr} {self._time():.2f}s trainloss={self._epochloss:.5f} validloss={validloss:.5f} {reportmetric}')
         self._log_reset()
 
     def _check_early_termination(self, validloss, targetloss, earlystop, silent):
@@ -1450,7 +1575,7 @@ class Trainer:
                 print('last post_forward(model(X))', self.lastypfw)
             except: pass
         
-    def learning_curve(self, y='loss', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, **kwargs):
+    def learning_curve(self, y='loss', series='phase', select=None, xlabel = None, ylabel = None, title=None, label_prefix='', fig=plt, legendargs={}, **kwargs):
         """
         Plot a learning curve with the train and valid loss on the y-axis over the epoch on the x-axis. 
         The plot is generated by the evaluator that logged training progress. By default the evaluator logs:
@@ -1476,6 +1601,8 @@ class Trainer:
                 the title of the plot
             label_prefix: str
                 prefixes the label, so that you can combine a plot with results from different metrics or models
+            legendargs: dict ({})
+                arguments that are passed to legend
             **kwargs: dict
                 forwarded to matplotlib's plot or scatter function
         """
@@ -1546,7 +1673,7 @@ class Trainer:
             for p in c.parameters():
                 p.requires_grad=True
 
-    def study(self, storage=None, sampler=None, pruner=None, study_name=None, direction=None, load_if_exists=False, directions=None):
+    def study(self, storage=None, sampler=None, pruner=None, study_name=None, direction=None, load_if_exists=False, directions=None, grid=None):
         """
         Creates an (extended) Optuna Study to study how hyperparameters affect the given target function 
         when training a model. This call will just instantiate and return the study object. Typical use is to
@@ -1559,25 +1686,38 @@ class Trainer:
         set the targets and directions.
         
         Arguments:
+            grid: dict (None)
+                dictionary with the values to use in a grid search
+        
             for the arguments, see create_study in the Optuna library
             
         Returns:
             Study (which is a subclass of Optuna.study.Study)
         """
         from .study import Study
-        return Study.create_study(self, storage=storage, sampler=sampler, pruner=pruner, study_name=study_name, direction=direction, load_if_exists=load_if_exists, directions=directions)
+        return Study.create_study(self, storage=storage, sampler=sampler, pruner=pruner, study_name=study_name, direction=direction, load_if_exists=load_if_exists, directions=directions, grid=grid)
     
-    def optimum(self, *target, direction=None, directions=None, select=None):
+    def optimum(self, *target, direction=None, directions=None, **select):
         """
         Finds the cycle at which optimal results where obtained over the validation set, on the given optimization
         metric. 
         
-        Arguments:
+        Args:
             *target: str or callable ('loss')
                 names or metric functions that are used to decide what training cycle the model was most optimal
+
             direction: str or [ str ] (None)
                 for every target: 'minimize' or 'maximize' to find the highest or lowest value on the given target
                 If None, 'minimize' is used when optimize is 'loss', otherwise 'maximize' is used
+ 
+            directions: [ str ] (None)
+                same as direction, but now a list of 'minimize' or 'maximize' for multipe targets.
+            
+            select: {} (None)
+                When None, the log={} values from the last call to train() are used. Otherwise, select
+                is a dictionary with values that distinguish the results from the current trial 
+                to the previous trails, which is needed to find the single best epoch of the current trail
+                to return the metrics for that epoch.
                 
         Returns:
             [ target ]
@@ -1598,7 +1738,7 @@ class Trainer:
                 directions = [ 'minimize' if t == 'loss' else 'maximize' for t in target ]
             else:
                 direction = 'minimize' if target[0] == 'loss' else 'maximize'
-        r = self.evaluator.optimum(*target, direction=direction, directions=directions, select=select)
+        r = self.evaluator.optimum(*target, direction=direction, directions=directions, **select)
         return [ r[t] for t in target ]
         
     def plot_hyperparameters(self, figsize=None):
@@ -1616,7 +1756,7 @@ class Trainer:
     def tune_weight_decay_old(self, lr=[1e-6,1e-4], params=[1e-6, 1], steps=40, smooth=0.05, yscale='log', **kwargs):
         self.tune( params, partial(self.set_optimizer_param, 'weight_decay'), lr=lr, steps=steps, smooth=smooth, label='weight decay', yscale=yscale, **kwargs)
 
-    def lr_find(self, lr=[1e-6, 10], steps=40, smooth=0.05, cache_valid=True, **kwargs):
+    def lr_find(self, lr=[1e-6, 10], steps=40, smooth=0.05, cache_valid=True, interactive=False, **kwargs):
         """
         Run a learning rate finder on the dataset (as propesed by Leslie Smith and implemented in FastAI). 
         This saves the model, then starting with a very low learning rate
@@ -1630,12 +1770,24 @@ class Trainer:
         Arguments:
             lr: [small float, big float] ([1e-6, 10])
                 Interval of learning rates to inspect
+                
             steps: int (40)
                 number of (exponential) steps to divide the learning rate interval in
+                
             smooth: float (0.05)
                 smoothing parameter, to generate a more readable graph
+                
             cache_valid: bool (True)
                 whether to keep the validation set if possible in memory. Switch of if there is insufficient memory
+                
+            interactive: bool (False)
+                switches the backend to matplotlib notebook to show the plot during training and switches
+                to matplotlib inline when it is done. It cannot (yet) detect the previous backend, so this
+                will only work when inline is the defaut mode.
         """
+        if interactive:
+            run_magic('matplotlib', 'notebook')
         with tuner(self, exprange(lr[0], lr[1], steps), self.set_lr, label='lr', yscale='log', smooth=smooth, cache_valid=cache_valid, **kwargs) as t:
             t.run()
+        if interactive:
+            run_magic('matplotlib', 'inline')

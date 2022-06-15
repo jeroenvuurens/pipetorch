@@ -1,4 +1,4 @@
-from .trainer import Trainer, to_numpy
+from .trainer import Trainer, to_numpy, Trainer as trainer
 from .study import Study
 import torch
 from torch import nn

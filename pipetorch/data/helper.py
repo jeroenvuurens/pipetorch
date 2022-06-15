@@ -83,14 +83,14 @@ def create_kaggle_authentication(username, key):
             the token that you have generated on your kaggle account (can be read in the .json file)
     """
     if not os.path.exists(Path.home() / '.kaggle'):
-        os.path.mkdir(Path.home() / '.kaggle')
-    os.path.chmod(Path.home() / '.kaggle', 0o600)
-    kagglejson = Path.home() / '.kaggle' / '.kaggle.json'
+        os.mkdir(Path.home() / '.kaggle')
+        os.chmod(Path.home() / '.kaggle', 0o700)
+    kagglejson = Path.home() / '.kaggle' / 'kaggle.json'
     if not os.path.exists(kagglejson):
         with open (kagglejson, "w") as fout:
-            fout.write(f'{"username":"{username}", "key":"{key}"}')
+            fout.write("{" + f'"username":"{username}", "key":"{key}"' + "}")
             print(f'kaggle authorization written to {kagglejson}')
-        os.path.chmod('~/.kaggle/kaggle.json', 0o600)
+        os.chmod(kagglejson, 0o600)
     else:
         print(f'kaggle authorization already exists, check {kagglejson}')
 
