@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, PolynomialFeatures, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures, OneHotEncoder, FunctionTransformer
 from sklearn.utils import resample
 from sklearn.model_selection import KFold, train_test_split, StratifiedKFold, StratifiedShuffleSplit
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold, MultilabelStratifiedShuffleSplit
@@ -12,11 +12,20 @@ import random
 import warnings
 import linecache
 from ..evaluate.evaluate import Evaluator
-from .helper import read_from_kaggle, read_from_kaggle_competition, read_csv, read_from_package, read_from_function
+from .helper import read_from_package, read_from_function
+from .kagglereader import Kaggle
 from .databunch import Databunch
 from .dset import DSet
 from pandas.core.groupby.generic import DataFrameGroupBy, SeriesGroupBy
 from collections import defaultdict
+from contextlib import contextmanager
+import functools
+from pandas.util import hash_pandas_object
+import hashlib
+from pandas.util._exceptions import find_stack_level
+import warnings
+
+pd.options.mode.chained_assignment = None
 
 def to_numpy(arr):
     try:
@@ -42,87 +51,73 @@ class show_warning:
                 wi.line = linecache.getline(wi.filename, wi.lineno)
         print(f'line number {wi.lineno}  line {wi.line}') 
         self.warning.__exit__(exc_type, exc_value, exc_traceback)
-
+        
 class _DFrame:
-    _metadata = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', 
+    _config   = ['_pt_scale_columns', '_pt_scale_omit_interval', '_pt_scalertype', '_pt_columny', '_pt_columnx', 
                  '_pt_vectory', '_pt_bias', '_pt_polynomials', '_pt_dtype', '_pt_category', '_pt_category_sort', 
-                 '_pt_dummies', '_pt_sequence_window', '_pt_sequence_shift_y', 
-                 '_pt_split_shuffle', '_pt_split_stratify', '_pt_split_random_state', 
-                 '_pt_folds_shuffle', '_pt_folds_stratify', '_pt_folds_random_state', 
-                 '_pt_valid_size', '_pt_test_size', '_pt_balance', 
-                 '_pt_train_valid_indices', '_pt_valid_indices', '_pt_test_indices',
-                 '_pt_folds', '_pt_fold', '_pt_created_folds', 
-                 '_pt_dataset', '_pt_transforms', '_pt_train_transforms']
+                 '_pt_dummies', '_pt_evaluator', '_pt_transform',
+                 '_pt_dataset_transforms', '_pt_dataset_train_transforms' ]
+    
+    _config_indices = [
+                 '_pt_sequence_window', '_pt_sequence_shift_y', 
+                 '_pt_split_shuffle', '_pt_split_stratify', '_pt_split_stratify_test', 
+                 '_pt_folds_stratify', '_pt_folds_random_state', 
+                 '_pt_split_random_state', '_pt_folds_shuffle', 
+                 '_pt_valid_size', '_pt_test_size', '_pt_balance', '_pt_filterna', 
+                 '_pt_train_valid_indices', '_pt_test_indices', '_pt_folds', '_pt_fold',
+                 '_cached_index' ]
+    
+    _config_fold = [ '_pt_fold' ]
+    
+    _cached =  [ #'_cached_changed', #'_cached_changed_fold', 
+                 '_cached_train', '_cached_valid', '_cached_test', '_cached_raw_train',
+                 '_cached_scalerx', '_cached_scalery',
+                 '_cached_categoryx', '_cached_categoryy',
+                 '_cached_columntransformerx', '_cached_columntransformery',
+                 '_cached_dummiesx', '_cached_dummiesy']
+                
+    _cached_indices = [ '_cached_train_indices', '_cached_valid_indices', '_cached_test_indices',
+                        '_cached_indices_before_testsplit', '_cached_indices_after_testsplit' ]
+    
+    _cached_fold = [ '_cached_folds' ]
 
-    _locked_names = [  '_pt__locked_train_indices', 
-                       '_pt__locked_valid_indices', '_pt__locked_test_indices',
-                       '_pt__locked_train', '_pt__locked_valid', 
-                       '_pt__locked_scalerx', '_pt__locked_scalery',
-                       '_pt__locked_categoryx', '_pt__locked_categoryy', 
-                       '_pt__locked_dummiesx', '_pt__locked_dummiesy', '_pt__locked_len',
-                       '_pt__indices_before_testsplit', '_pt__indices_after_testsplit',
-]
-
-    _internal_names = pd.DataFrame._internal_names + _locked_names
+    _metadata = _config + _config_indices + _config_fold + _cached + _cached_indices + _cached_fold
+    _config_set = set( _config )
+    _config_indices_set = set( _config_indices )
+    _config_fold_set = set( _config_fold )
+    
+    _internal_names = pd.DataFrame._internal_names + _metadata
     
     _internal_names_set = set( _internal_names )
     
     def __init__(self, data, **kwargs):
+        for m in self._config:
+            setattr(self, m, None)
+        for m in self._config_indices:
+            setattr(self, m, None)
+        self._index_changed()
         for m in self._metadata:
-            self.__setattr__(m, None)
-            self._pt_vectory = False
-            self._pt_fold = 0
             try:
-                self.__setattr__(m, getattr(data, m))
+                setattr(self, m, getattr(data, m))
             except: pass
-
+    
+    @classmethod
+    def stop_warnings(cls):
+        pd.options.mode.chained_assignment = None
+    
     def _copy_meta(self, r):
         for c in self._metadata:
-            setattr(r, c, getattr(self, c))
+            try:
+                setattr(r, c, getattr(self, c))
+            except: pass
         return r
-            
-    def _copy_indices(self, r):
-        if self.is_locked:
-            r._pt__locked_train_indices = self._pt__locked_train_indices
-            r._pt__locked_valid_indices = self._pt__locked_valid_indices
-            r._pt__locked_test_indices = self._pt__locked_test_indices
-            r._pt__locked_len = self._pt__locked_len
-        return r
-        
+
     def _dframe(self, data):
         return self._copy_meta( DFrame(data) )
-    
-    def _copy_with_indices(self):
-        r = copy.copy(self)
-        self._copy_indices(r)
-        return r
+
+    def _dset(self, data, transforms=None):
+        return DSet.from_dframe(data, self, transforms)
         
-    def _dset(self, data, indices=None, transforms=None):
-        if indices is None:
-            indices = list(range(len(data)))
-        return DSet.from_dframe(data, self, indices, transforms)
-    
-    @property
-    def is_locked(self):
-        try:
-            return self._pt__locked_train_indices is not None and len(self) == self._pt__locked_len
-        except:
-            return False
-    
-    def lock(self):
-        """
-        To provide stable sampling of the train, valid and test set, this locks the sampled indices so that
-        from this point, train, valid and test consistently produce the same subsets.
-        
-        Returns: DFrame
-            a copy of the DFrame for which the sampled indices are locked
-        """
-        if not self.is_locked:
-            self._pt__locked_valid_indices = self._valid_indices
-            self._pt__locked_train_indices = self._train_indices
-            self._pt__locked_test_indices = self._test_indices
-            self._pt__locked_len = len(self)
-    
     @property
     def _columny(self):
         try:
@@ -135,8 +130,8 @@ class _DFrame:
         """
         Lazily executed change of dtype to the data.
         """
-        r = self._copy_with_indices()
-        r._pt_dtype = dtype
+        r = self.copy(deep=False)
+        r._change('_pt_dtype', dtype)
         return r
         
     @property
@@ -152,7 +147,7 @@ class _DFrame:
     @property
     def _columnsx_scale_indices(self):
         if self._pt_polynomials is not None and self._pt_scale_columns is not None:
-            X = self.train._x_polynomials
+            X = self.raw_train._x_polynomials
             return [ i for i in range(X.shape[1]) if (X[:,i].min() < self._pt_scale_omit_interval[0] or X[:,i].max() > self._pt_scale_omit_interval[1]) ]
         columnx = self._columnx
         cat = set(self._pt_category) if type(self._pt_category) == tuple else []
@@ -162,8 +157,9 @@ class _DFrame:
             r = []
         else:
             r = [ c for c in columnx if c in self._pt_scale_columns and c not in cat ]
-        X = self.train._x_polynomials
-        r = [ columnx.index(c) for i, c in enumerate(columnx) if c in r and ((X[:,i].min() < self._pt_scale_omit_interval[0] or X[:,i].max() > self._pt_scale_omit_interval[1])) ]
+        if len(r) > 0:
+            X = self.raw_train._x_polynomials
+            r = [ columnx.index(c) for i, c in enumerate(columnx) if c in r and ((X[:,i].min() < self._pt_scale_omit_interval[0] or X[:,i].max() > self._pt_scale_omit_interval[1])) ]
         return r
         
     @property
@@ -171,7 +167,7 @@ class _DFrame:
         columny = self._columny
         cat = set(self._pt_category) if type(self._pt_category) == tuple else []
         if self._pt_scale_columns == True:
-            y = self.train._y_numpy
+            y = self.raw_train._y_numpy
             r = [ c for i, c in enumerate(columny) if c not in cat and (y[:,i].min() < self._pt_scale_omit_interval[0] or y[:,i].max() > self._pt_scale_omit_interval[1]) ]
         elif self._pt_scale_columns == False or self._pt_scale_columns is None or len(self._pt_scale_columns) == 0:
             r = []
@@ -187,28 +183,36 @@ class _DFrame:
     
     @property
     def _scalerx(self):
-        try:
-            return self._pt__locked_scalerx
-        except:  
-            X = self.train._x_polynomials
-            s = [ None ] * X.shape[1]
-            for i in self._columnsx_scale_indices:
-                s[i] = self._create_scaler(self._pt_scalertype, X[:, i:i+1])
-            self._pt__locked_scalerx = s
-            return self._pt__locked_scalerx
+        if self._unchanged() and self._cached_scalerx is not None:
+            return self._cached_scalerx
+        
+        X = self.raw_train._x_polynomials
+        r = [ None ] * X.shape[1]
+        for i in self._columnsx_scale_indices:
+            r[i] = self._create_scaler(self._pt_scalertype, X[:, i:i+1])
+        self._change('_cached_scalerx', r)
+        return r
+     
+    @_scalerx.setter
+    def _scalerx(self, value):
+        self._change('_cached_scalerx', value)
         
     @property
     def _scalery(self):
-        try:
-            return self._pt__locked_scalery
-        except:
-            y = self.train._y_numpy
-            s = [ None ] * y.shape[1]
-            for i in self._columnsy_scale_indices:
-                s[i] = self._create_scaler(self._pt_scalertype, y[:, i:i+1])
-            self._pt__locked_scalery = s
-            return self._pt__locked_scalery
+        if self._unchanged() and self._cached_scalery is not None:
+            return self._cached_scalery
+        
+        y = self.raw_train._y_numpy
+        r = [ None ] * y.shape[1]
+        for i in self._columnsy_scale_indices:
+            r[i] = self._create_scaler(self._pt_scalertype, y[:, i:i+1])
+        self._change('_cached_scalery', r)
+        return r
     
+    @_scalery.setter
+    def _scalery(self, value):
+        self._change('_cached_scalery', value)
+        
     def _create_category(self, column):
         sort = self._pt_category_sort
         class Category:
@@ -230,61 +234,95 @@ class _DFrame:
             return None
         
         c = Category()
-        c.fit(self.train[column])
+        c.fit(self.raw_train[column])
         return c
     
     def _categoryx(self):
-        try:
-            return self._pt__locked_categoryx
-        except:
-            assert self.is_locked, '_categoryx can only be called on a locked DFrame to avoid consistency issues'
-            if self._pt_category is None or len(self._pt_category) == 0:
-                self._pt__locked_categoryx = None
-            else:
-                self._pt__locked_categoryx = [ self._create_category(c) for c in self._columnx ] 
-            return self._pt__locked_categoryx
+        if self._unchanged() and self._cached_categoryx is not None:
+            return self._cached_categoryx
+        
+        if self._pt_category is None or len(self._pt_category) == 0:
+            return None
+        r = [ self._create_category(c) for c in self._columnx ]
+        self._change('_cached_categoryx', r)
+        return self._cached_categoryx
     
     def _categoryy(self):
-        try:
-            return self._pt__locked_categoryy
-        except:
-            assert self.is_locked, '_categoryy can only be called on a locked DFrame to avoid consistency issues'
-            if self._pt_category is None or len(self._pt_category) == 0:
-                self._pt__locked_categoryy = None
-            else:
-                self._pt__locked_categoryy = [ self._create_category(c) for c in self._columny ] 
-            return self._pt__locked_categoryy
+        if self._unchanged() and self._cached_categoryy is not None:
+            return self._cached_categoryy
+        
+        if self._pt_category is None or len(self._pt_category) == 0:
+            return None
+        r = [ self._create_category(c) for c in self._columny ] 
+        self._change('_cached_categoryy', r)
+        return r
 
+    def _columntransformerx(self):
+        if self._unchanged() and self._cached_columntransformerx is not None:
+            return self._cached_columntransformerx
+        
+        if self._pt_transform is None or len(self._pt_transform) == 0:
+            return None
+        r = []
+        for c in self._columnx:
+            try:
+                t = self._pt_transform[c]
+                t.fit(self.raw_train[c])
+                r.append(t)
+            except:
+                r.append(None)
+                
+        self._change('_cached_columntransformerx', r)
+        return self._cached_columntransformerx
+        
+    def _columntransformery(self):
+        if self._unchanged() and self._cached_columntransformery is not None:
+            return self._cached_columntransformery
+        
+        if self._pt_transform is None or len(self._pt_transform) == 0:
+            return None
+        r = []
+        for c in self._columny:
+            try:
+                t = self._pt_transform[c]
+                t.fit(self.raw_train[c])
+                r.append(t)
+            except:
+                r.append(None)
+                
+        self._change('_cached_columntransformery', r)
+        return self._cached_columntransformery
+    
     def _create_dummies(self, column):    
         if column not in self._pt_dummies:
             return None
         
         c = OneHotEncoder(handle_unknown='ignore')
-        c.fit(self.train[[column]])
+        c.fit(self.raw_train[[column]])
         return c
     
     def _dummiesx(self):
-        try:
-            return self._pt__locked_dummiesx
-        except:
-            assert self.is_locked, '_dummiesx can only be called on a locked DFrame to avoid consistency issues'
-            if self._pt_dummies is None or len(self._pt_dummies) == 0:
-                self._pt__locked_dummiesx = [ None ] * len(self._columnx)
-            else:
-                self._pt__locked_dummiesx = [ self._create_dummies(c) for c in self._columnx ]
-            return self._pt__locked_dummiesx
+        if self._unchanged() and self._cached_dummiesx is not None:
+            return self._cached_dummiesx
+        
+        if self._pt_dummies is None or len(self._pt_dummies) == 0:
+            r = [ None ] * len(self._columnx)
+        else:
+            r = [ self._create_dummies(c) for c in self._columnx ]
+        self._change('_cached_dummiesx', r)
+        return r
     
     def _dummiesy(self):
-        try:
-            return self._pt__locked_dummiesy
-        except:
-            assert self.is_locked, '_dummiesy can only be called on a locked DFrame to avoid consistency issues'
-            if self._pt_dummies is None or len(self._pt_dummies) == 0:
-                self._pt__locked_dummiesy = [ None ] * len(self._columny)
-            else:
-                self._pt__locked_dummiesy = [ self._create_dummies(c) for c in self._columny ]
-            return self._pt__locked_dummiesy
-
+        if self._unchanged() and self._cached_dummiesy is not None:
+            return self._cached_dummiesy
+        
+        if self._pt_dummies is None or len(self._pt_dummies) == 0:
+            r = [ None ] * len(self._columny)
+        else:
+            r = [ self._create_dummies(c) for c in self._columny ]
+        self._change('_cached_dummiesy', r)
+        return r
+        
     @property
     def _shift_y(self):
         if self._pt_sequence_shift_y is not None:
@@ -303,48 +341,35 @@ class _DFrame:
     @property
     def _sequence_index_y(self):
         return self._sequence_window+self._shift_y-1
-    
-    def _indices_notnull(self):
-        if self._pt_sequence_window is not None:
-            def a(w):
-                return np.all(w)
-
-            indicesy = np.where(self[self._columny].notnull().all(1))[0]
-            indicesx = self[self._columnx].notnull().all(1)[::-1].rolling(self._pt_sequence_window).apply(a, raw=True, engine='numba')[::-1].index
-            indicesy = set(indicesy - (self._pt_sequence_window + self._pt_sequence_shift_y - 1))
-            return np.array([ i for i in indicesx if i in indicesy ])
-        else:
-            return np.array(np.where(self[self._all_columns].notnull().all(1))[0])
-    
+        
     @property
     def _indices_unshuffled(self):
-        try:
-            return np.array([ i for i in self._pt_train_valid_indices if i in set(self._indices_notnull()) ])
-        except:
-            return self._indices_notnull()
+        if self._pt_train_valid_indices is not None:
+            return np.intersect1d(self.index.values, self._pt_train_valid_indices)
+        return self.index.values
 
     @property
     def _indices_before_testsplit(self):
-        try:
-            if self._pt__indices_before_testsplit is not None:
-                return self._pt__indices_before_testsplit
-        except: pass
-        try:
-            test_indices = set(self._test_indices)
-            self._pt__indices_before_testsplit = np.array([ i for i in self._indices_unshuffled if i not in test_indices ])
-        except:
-            self._pt__indices_before_testsplit = self._indices_unshuffled
-        return self._pt__indices_before_testsplit
+        if self._unchanged() and self._cached_indices_before_testsplit is not None:
+            return self._cached_indices_before_testsplit
+        
+        test_indices = set(self.fixed_test_indices)
+        if len(test_indices) > 0:
+            r = np.array([ i for i in self._indices_unshuffled if i not in test_indices ])
+        else:
+            r = self._indices_unshuffled
+        self._change('_cached_indices_before_testsplit', r)
+        return r
            
     @property
     def _indices_after_testsplit(self):
-        try:
-            if self._pt__indices_after_testsplit is not None:
-                return self._pt__indices_after_testsplit
-        except: pass
+        if self._unchanged() and self._cached_indices_after_testsplit is not None:
+            return self._cached_indices_after_testsplit
+        
         test_indices = set(self._test_indices)
-        self._pt__indices_after_testsplit = np.array([ i for i in self._indices_before_testsplit if i not in test_indices ])
-        return self._pt__indices_after_testsplit
+        r = np.array([ i for i in self._indices_before_testsplit if i not in test_indices ])
+        self._change('_cached_indices_after_testsplit', r)
+        return r
 
     @property
     def _test_size(self):
@@ -359,36 +384,53 @@ class _DFrame:
         return ((self._pt_split_shuffle is None and \
                 (self._test_size > 0 or self._valid_size > 0)) \
                 or self._pt_split_shuffle) and self._pt_sequence_window is None
+    
+    def _stratifyable_columns(self, indices, columns, bins):
+        if columns == True:
+            columns = self._all_columns
+        df = self.loc[indices, columns]
+        if bins > 1:
+            bins = len(df) // bins
+        else:
+            if bins >= 0.5:
+                bins = 1 - bins
+            bins = math.ceil(1 / bins)
+            bins = len(df) // bins
+        for c in df.columns:
+            if pd.api.types.is_float_dtype(df[c]):
+                df[c] = pd.qcut(df[c] + np.random.random(len(df))/1000, bins, labels=False)
+        return df
+    
+    @property
+    def fixed_test_indices(self):
+        if self._pt_test_indices is not None:
+            r = np.intersect1d(self.index.values, self._pt_test_indices)
+            if len(r) < len(self._pt_test_indices):
+                warnings.warn("Test rows were lost because of a previous operation.",
+                    RuntimeWarning,
+                )
+                self._pt_test_indices = r
+            return self._pt_test_indices
+        return []
         
     @property
     def _test_indices(self):
-        try:
-            if self._pt__locked_test_indices:
-                return self._pt__locked_test_indices
-        except: pass
-        try:
-            if self._pt_test_indices is not None:
-                return self._pt_test_indices
-        except: pass
-        try:
-            del self._pt_valid_indices
-        except: pass
-        try:
-            del self._pt_train_indices
-        except: pass
-        self._pt_test_indices = []
+        if self._pt_test_indices is not None:
+            return self.fixed_test_indices
+        if self._unchanged() and self._cached_test_indices is not None:
+            return self._cached_test_indices
         if self._pt_folds is not None and self._test_size == 1:
-            self._pt_test_indices = self._test_fold(self._pt_fold)
+            r = self._test_fold
         elif self._test_size > 0:
-            if self._pt_split_stratify is None:
-                if self._split_shuffle:
-                    _, self._pt_test_indices = train_test_split(self._indices_before_testsplit, test_size=self._test_size, random_state=self._pt_split_random_state)
-                    self._pt_test_indices = sorted(self._pt_test_indices)
+            if self._pt_split_stratify_test is None:
+                if self._shuffle:
+                    _, r = train_test_split(self._indices_before_testsplit, test_size=self._test_size, random_state=self._pt_split_random_state)
+                    r = sorted(r)
                 else:
                     test_size = int(self._test_size * len(self._indices_before_testsplit))
-                    self._pt_test_indices = self._indices_before_testsplit[-test_size:]
+                    r = self._indices_before_testsplit[-test_size:]
             else:
-                if len(self._pt_split_stratify) > 1:
+                if self._pt_split_stratify_test == True or len(self._pt_split_stratify_test) > 1:
                     splitter = MultilabelStratifiedShuffleSplit(n_splits=1, 
                                                        random_state=self._pt_split_random_state, 
                                                        test_size=self._test_size)
@@ -396,11 +438,14 @@ class _DFrame:
                     splitter = StratifiedShuffleSplit(n_splits=1, 
                                                        random_state=self._pt_split_random_state, 
                                                        test_size=self._test_size) 
-                target = self.iloc[self._indices_before_testsplit][self._pt_split_stratify]
-                _, self._pt_test_indices = next(splitter.split(target, target))
-                self._pt_test_indices = sorted(self._pt_test_indices)
-                    
-        return self._pt_test_indices
+                target = self._stratifyable_columns(self._indices_before_testsplit, 
+                                                    self._pt_split_stratify_test, self._test_size / len(self))
+                _, r = next(splitter.split(target, target))
+                r = sorted(r)
+        else:
+            r = []  
+        self._change('_cached_test_indices', r)
+        return r
     
     @property
     def _train_indices_unbalanced(self):
@@ -415,13 +460,11 @@ class _DFrame:
 
     @property
     def _train_indices(self):
-        try:
-            if self._pt__locked_train_indices:
-                return self._pt__locked_train_indices
-        except: pass
-        indices = self._train_indices_unbalanced
+        if self._unchanged() and self._cached_train_indices is not None:
+            return self._cached_train_indices
+        r = self._train_indices_unbalanced
         if self._pt_balance is not None:
-            y = self.iloc[indices][self._columny]
+            y = self.loc[r, self._columny]
             classes = np.unique(y)
             classindices = {c:np.where(y==c)[0] for c in classes}
             classlengths = {c:len(indices) for c, indices in classindices.items()}
@@ -432,25 +475,16 @@ class _DFrame:
                 weights = self._pt_balance
                 n = max([ int(math.ceil(classlengths[c] / w)) for c, w in weights.items() ])
                 mask = np.hstack([self._pseudo_choose(classindices[c], round(n*weights[c])) for c in classes])
-            indices = np.array(indices)[ mask.astype(int) ]
-        return indices
+            r = np.array(r)[ mask.astype(int) ]
+        self._change('_cached_train_indices', r)
+        return r
 
     @property
     def _valid_indices(self):
-        try:
-            if self._pt__locked_valid_indices is not None:
-                return self._pt__locked_valid_indices
-        except: pass
-        try:
-            if self._pt_valid_indices is not None:
-                return self._pt_valid_indices
-        except: pass
-        try:
-            del self._pt_train_indices
-        except: pass
-        self._pt_valid_indices = []
+        if self._unchanged() and self._cached_valid_indices is not None:
+            return self._cached_valid_indices
         if self._pt_folds is not None:
-            self._pt_valid_indices = self._valid_fold(self._pt_fold)
+            r = self._valid_fold
         elif self._valid_size > 0:
             if self._test_size < 1:
                 valid_size = self._valid_size / (1 - self._test_size)
@@ -459,13 +493,13 @@ class _DFrame:
             if valid_size > 0:
                 if self._pt_split_stratify is None:
                     if self._shuffle:
-                        _, self._pt_valid_indices = train_test_split(self._indices_after_testsplit, test_size=valid_size, random_state=self._pt_split_random_state)
-                        self._pt_valid_indices = sorted(self._pt_valid_indices)
+                        _, r = train_test_split(self._indices_after_testsplit, test_size=valid_size, random_state=self._pt_split_random_state)
+                        r = sorted(r)
                     else:
                         valid_size = int(valid_size * len(self._indices_before_testsplit))
-                        self._pt_valid_indices = self._indices_after_testsplit[-valid_size:]                        
+                        r = self._indices_after_testsplit[-valid_size:]                        
                 else:
-                    if len(self._pt_split_stratify) > 1:
+                    if self._pt_split_stratify == True or len(self._pt_split_stratify) > 1:
                         splitter = MultilabelStratifiedShuffleSplit(n_splits=1, 
                                                            random_state=self._pt_split_random_state, 
                                                            test_size=valid_size)
@@ -473,33 +507,30 @@ class _DFrame:
                         splitter = StratifiedShuffleSplit(n_splits=1, 
                                                            random_state=self._pt_split_random_state, 
                                                            test_size=valid_size) 
-                    target = self.loc[self._indices_after_testsplit, self._pt_split_stratify]
-                    _, self._pt_valid_indices = next(splitter.split(target, target))
-                    self._pt_valid_indices = sorted(self._pt_valid_indices)
-        elif self._pt_folds is not None:
-            self._pt_valid_indices = self._valid_fold(self._pt_fold)
-        return self._pt_valid_indices
+                    target = self._stratifyable_columns(self._indices_after_testsplit, self._pt_split_stratify, self._valid_size / (len(self)-self._test_size))
+                    _, r = next(splitter.split(target, target))
+                    r = sorted(r)
+        else:
+            r = []
+        self._change('_cached_valid_indices', r)
+        return r
 
     @property
     def _folds(self):
-        try:
-            if self._pt_created_folds is not None:
-                return self._pt_created_folds
-        except: pass
-        assert self._pt_folds is not None and type(self._pt_folds) == int, 'You have to set split(folds) to an integer'
-        assert self._pt_folds > 1, 'You have to set split(folds) to an integer > 1'
-        self._pt_created_folds = []
+        if self._unchanged() and self._cached_folds is not None:
+            return self._cached_folds
+        r = []
         if 0 < self._test_size < 1:
             indices = self._indices_after_testsplit
         else:
             indices = self._indices_before_testsplit
         if self._pt_folds_stratify is None:
-            target = self.iloc[indices]
+            target = self.loc[indices]
             splitter = KFold(n_splits = self._pt_folds, shuffle=self._pt_folds_shuffle, random_state=self._pt_folds_random_state)
             for train_indices, valid_indices in splitter.split(target, target):
-                self._pt_created_folds.append(sorted(indices[valid_indices]))
+                r.append(sorted(indices[valid_indices]))
         else:
-            if len(self._pt_folds_stratify) > 1:
+            if self._pt_folds_stratify != True and len(self._pt_folds_stratify) > 1:
                 splitter = MultilabelStratifiedKFold(n_splits = self._pt_folds,
                                     shuffle=True,
                                     random_state=self._pt_folds_random_state)
@@ -507,17 +538,36 @@ class _DFrame:
                 splitter = StratifiedKFold(n_splits = self._pt_folds,
                                     shuffle=True,
                                     random_state=self._pt_folds_random_state)
-            target = self.loc[indices, self._pt_folds_stratify]
+            target = self._stratifyable_columns(indices, self._pt_folds_stratify, self._pt_folds)
             for train_indices, valid_indices in splitter.split(target, target):
-                self._pt_created_folds.append(sorted(indices[valid_indices]))
-        return self._pt_created_folds
+                r.append(sorted(indices[valid_indices]))
+        self._change('_cached_folds', r)
+        return r
     
-    def _test_fold(self, i):
-        test_fold = (i + 1 + (i // self._pt_folds % (self._pt_folds - 1))) % self._pt_folds
+    @property
+    def _fold(self):
+        """
+        The current valid fold number, set by df.fold(i)
+        """
+        try:
+            return self._pt_fold + 0
+        except:
+            return 0
+    
+    @property
+    def _test_fold(self):
+        """
+        the current test fold, determined by df.fold(i) + 1
+        """
+        test_fold = (self._fold + 1 + (self._fold // self._pt_folds % (self._pt_folds - 1))) % self._pt_folds
         return self._folds[test_fold]
     
-    def _valid_fold(self, i):
-        return self._folds[i]
+    @property
+    def _valid_fold(self):
+        """
+        The current valid fold, determined by df.fold(i)
+        """
+        return self._folds[self._fold]
     
     def fold(self, i):
         """
@@ -537,17 +587,10 @@ class _DFrame:
             In this copy, the train, valid and test sets are shifted to fold n
         """
         self._folds
-        r = copy.copy(self)
+        r = self.copy(deep=False)
         
         i = i % r._pt_folds
-        r._pt_fold = i
-        if self._test_size == 1:  # choose a fold
-            r._pt_test_indices = r._test_fold(i)
-            r._pt_valid_indices = r._valid_fold(i)
-            #r._pt_train_indices = np.hstack([ f for f in self._folds if f != r._pt_test_indices and f != r._pt_valid_indices ])
-        else:
-            r._pt_valid_indices = r._valid_fold(i)
-            #r._pt_train_indices = np.hstack([ f for f in self._folds if f != r._pt_valid_indices ])
+        r._change('_pt_fold', i)
         return r
     
     def iterfolds(self):
@@ -560,11 +603,10 @@ class _DFrame:
         Yields:
             train, valid (DSet)
         """
-        r = self.fold(0)
-        for i in range(r._pt_folds):
-            yield r.fold(i)
+        for i in range(self._pt_folds):
+            yield self.fold(i)
     
-    def df_to_dataset(self, df):
+    def df_to_dataset(self, df, datasetclass=None):
         """
         Converts the given df to a DataSet using the pipeline of this DFrame.
         
@@ -574,10 +616,9 @@ class _DFrame:
         
         returns: Converts the given df to a DataSet.
         """
-        #assert self.is_locked, 'You can only use a locked DFrame, to prevent inconsistencies in the transformation'
-        return self.df_to_dset(df).to_dataset()
+        return self.df_to_dset(df).to_dataset(datasetclass)
         
-    def to_datasets(self, dataset=None):
+    def to_datasets(self, datasetclass=None):
         """
         Prepares the train, valid and (optionally) test subsets as a DSet, which can be used to complete 
         the data preparation.
@@ -591,13 +632,11 @@ class _DFrame:
         
         Returns: list(DataSet)
         """
-        self.lock()
-        self._pt_dataset = dataset
-        res = [ self.train.to_dataset() ]
+        res = [ self.train.to_dataset(datasetclass) ]
         if len(self._valid_indices) > 0:
-            res.append(self.valid.to_dataset())
+            res.append(self.valid.to_dataset(datasetclass))
         if len(self._test_indices) > 0:
-            res.append(self.test.to_dataset())
+            res.append(self.test.to_dataset(datasetclass))
         return res
         
     def df_to_dset(self, df):
@@ -609,14 +648,14 @@ class _DFrame:
         
         Returns: DSet
         """
-        #assert self.is_locked, 'You can only use a locked DFrame, to prevent inconsistencies in the transformation'
-        return self._dset(df, range(len(df)))
+        return self._dset(df)
         
-    def to_databunch(self, dataset=None, batch_size=32, valid_batch_size=None, 
+    def to_databunch(self, datasetclass=None, batch_size=32, valid_batch_size=None, 
                      num_workers=0, shuffle=True, pin_memory=False, balance=False, 
                      collate=None):
         """
         Prepare the data as a Databunch that contains dataloaders for the train, valid and test part.
+        
         batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor.
         
         A first call will trigger rows to be assigned to the train, valid and test part, which are stored
@@ -624,12 +663,12 @@ class _DFrame:
 
         Returns: Databunch
         """
-        return Databunch(self, *self.to_datasets(dataset=dataset), 
+        return Databunch(self, *self.to_datasets(datasetclass=datasetclass), 
                          batch_size=batch_size, valid_batch_size=valid_batch_size, 
                          num_workers=num_workers, shuffle=shuffle, 
                          pin_memory=pin_memory, balance=balance, collate=collate)    
 
-    def evaluate(self, *metrics):
+    def _evaluator(self, *metrics):
         """
         Creates a PipeTorch Evaluator, that can be used to visualize the data, the results
         of a model or cache learning/validation diagnostics. Since datasets are often
@@ -646,10 +685,16 @@ class _DFrame:
         
         returns: Evaluator
         """
-        
-        self.lock()
         return Evaluator(self, *metrics)
    
+    def evaluator(self, *metrics):
+        try:
+            if self._pt_evaluator.metrics == metrics:
+                return self._pt_evaluator
+        except: pass
+        self._pt_evaluator = self._evaluator(*metrics)
+        return self._pt_evaluator
+
     def from_numpy(self, x):
         if x.shape[1] == len(self._columnx) + len(self._columny):
             y = x[:,-len(self._columny):]
@@ -668,13 +713,13 @@ class _DFrame:
     
     def _dset_indices(self, indices, transforms):
         if self._pt_sequence_window is None:
-            return self._dset(self.iloc[indices], indices, transforms)
+            return self._dset(self.loc[indices], transforms=transforms)
         else:
             try:
                 low, high = min(indices), max(indices) + self._sequence_window + self._shift_y - 1
-                return self._dset(self.iloc[low:high], list(range(low, high)), transforms)
+                return self._dset(self.loc[low:high], transforms=transforms)
             except:
-                return self._dset(self.iloc[:0], [], transforms)
+                return self._dset(self.loc[:0], transforms=transforms)
     
     @property
     def train(self):
@@ -687,39 +732,44 @@ class _DFrame:
         
         Returns: DSet
         """
-        try:
-            if self.is_locked:
-                return self._pt__locked_train
-        except: pass
-        self.lock()
-        self._pt__locked_train = self._dset_indices(self._train_indices, self._transforms())
-        if self._train_transformation_parameters(self._pt__locked_train):
-            self._pt__locked_train = self._dset_indices(self._train_indices, self._transforms())
-        return self._pt__locked_train
-    
+        if self._unchanged() and self._cached_train is not None:
+            return self._cached_train
+        
+        r = self._dset_indices(self._train_indices, self._dataset_transforms())
+        if self._dataset_train_transformation_parameters(r):
+            r = self._dset_indices(self._train_indices, self._dataset_transforms())
+        self._change('_cached_train', r)
+        self._cached_raw_train = None
+        return r
+                    
     @property
     def raw_train(self):
-        self.lock()
-        return self._dset_indices(self._train_indices, self._transforms())
+        if self._unchanged() and self._cached_raw_train is not None:
+            return self._cached_raw_train
+        self._cached_raw_train = self._dset_indices(self._train_indices, self._dataset_transforms())
+        return self._cached_raw_train
     
     @property
     def valid(self):
-        try:
-            if self.is_locked:
-                return self._pt__locked_valid
-        except: pass
-        self.lock()
-        self._pt__locked_valid = self._dset_indices(self._valid_indices, self._transforms(train=False))
-        return self._pt__locked_valid
+        if self._unchanged() and self._cached_valid is not None:
+            return self._cached_valid
+        
+        r = self._dset_indices(self._valid_indices, self._dataset_transforms(train=False))
+        self._change('_cached_valid', r)
+        return r
 
     @property
     def test(self):
-        self.lock()
+        if self._unchanged() and self._cached_test is not None:
+            return self._cached_test
+        
         if self._pt_sequence_window is None:
-            return DSet.df_to_testset(self.iloc[self._test_indices], self, self._test_indices, self._transforms(train=False))
+            r = DSet.df_to_testset(self.loc[self._test_indices], self, self._dataset_transforms(train=False))
         else:
             low, high = min(self._test_indices), max(self._test_indices) + self._sequence_window + self._shift_y - 1
-            return DSet.df_to_testset(self.iloc[low:high], self, list(range(low, high)), self._transforms(train=False))
+            r = DSet.df_to_testset(self.loc[low:high], self, self._dataset_transforms(train=False))
+        self._change('_cached_test', r)
+        return r
     
     @property
     def train_X(self):
@@ -740,13 +790,22 @@ class _DFrame:
     @property
     def test_X(self):
         return self.test.X
-            
+    
+    def numpy(self):
+        """
+        Returns: train_X, train_y, valid_X, valid_y
+        """
+        return self.train_X, self.train_y, self.valid_X, self.valid_y
+        
+    def tensor(self):
+        return self.train.X_tensor, self.train.y_tensor, self.valid.X_tensor, self.valid.y_tensor
+    
     @property
     def test_y(self):
         return self.test.y
     
     def loss_surface(self, model, loss, **kwargs):
-        self.evaluate(loss).loss_surface(model, loss, **kwargs)
+        self._evaluator(loss).loss_surface(model, loss, **kwargs)
     
     def inverse_scale_y(self, y):
         """
@@ -788,12 +847,14 @@ class _DFrame:
         Returns: DFrame 
         """
         df_y = self.inverse_scale_y(y)
-        r = copy.deepcopy(self)
+        r = self.copy()
         if columns is None:
             columns = [ c + '_pred' for c in self._columny ]
         r[columns] = np.NaN
         r.loc[r.index[indices], columns] = df_y.values
-        return self._dframe(r)
+        r = self._dframe(r)
+        r._cached_changed = True
+        return r
     
     def inverse_scale_X(self, X):
         """
@@ -862,7 +923,7 @@ class _DFrame:
         return df
         
     def plot_boundary(self, predict):
-        self.evaluate().plot_boundary(predict)
+        self._evaluator().plot_boundary(predict)
 
     def balance(self, weights=True):
         """
@@ -880,11 +941,8 @@ class _DFrame:
         
         Returns: DFrame
         """
-        r = self._copy_with_indices()
-        try:
-            del r._pt__locked_train_indices
-        except: pass
-        r._pt_balance = weights
+        r = self.copy(deep=False)
+        r._change('_pt_balance', weights)
         return r    
   
     def scale(self, columns=True, scalertype=StandardScaler, omit_interval=(-2,2)):
@@ -909,10 +967,10 @@ class _DFrame:
         """
         if self._pt_polynomials and columns != 'x_only':
             assert type(columns) != list or len(columns) == 0, 'You cannot combine polynomials with column specific scaling'
-        r = self._copy_with_indices()
-        r._pt_scale_columns = columns
-        r._pt_scalertype = scalertype
-        r._pt_scale_omit_interval = omit_interval
+        r = self.copy(deep=False)
+        r._change('_pt_scale_columns', columns)
+        r._change('_pt_scalertype', scalertype)
+        r._change('_pt_scale_omit_interval', omit_interval)
         return r
     
     def scalex(self, scalertype=StandardScaler, omit_interval=(-2,2)):
@@ -942,8 +1000,8 @@ class _DFrame:
 
         Returns: DFrame
         """
-        r = self._copy_with_indices()
-        r._pt_bias = True
+        r = self.copy(deep=False)
+        r._change('_pt_bias', True)
         return r
     
     def reshuffle(self, random_state=None):
@@ -958,10 +1016,23 @@ class _DFrame:
                 
         Returns: DFrame
         """
-        r = self.reset_indices()
-        r._pt_split_random_state = random_state
+        r = self.copy(deep=False)
+        r._change('_pt_split_random_state', random_state)
         return r
-        
+    
+    def _index_changed(self):
+        for p in self._cached_indices:
+            setattr(self, p, None)
+        for p in self._cached_fold:
+            setattr(self, p, None)
+        for p in self._cached:
+            setattr(self, p, None)
+        self._cached_index = self.index.copy()
+
+    def _columns_changed(self):
+        for p in self._cached:
+            setattr(self, p, None)
+    
     def reset_indices(self):
         """
         Clears the currently sampled split() and folds(), which is stored whenever data preparation
@@ -972,22 +1043,17 @@ class _DFrame:
         
         Returns: DFrame
         """
-        r = copy.copy(self)
-        try:
-            del r._pt_train_indices
-        except: pass
-        try:
-            del r._pt_valid_indices
-        except: pass
-        try:
-            del r._pt_test_indices
-        except: pass
-        try:
-            del r._pt_created_folds
-        except: pass
+        r = self.copy(deep=False)
+        r._index_changed()
         return r
         
-    def split(self, valid_size=None, test_size=None, shuffle=None, random_state=None, stratify=None):
+    def split(self, 
+              valid_size=None, 
+              test_size=None, 
+              shuffle=None, 
+              random_state=None, 
+              stratify=None, 
+              stratify_test=None):
         """
         Split the data in a train/valid/(test) set. 
         
@@ -996,27 +1062,40 @@ class _DFrame:
         Arguments:
             valid_size: float (None)
                 the fraction of the dataset that is used for the validation set.
+                
             test_size: float (None)
                 the fraction of the dataset that is used for the test set. When combined with folds
                 if 1 > test_size > 0, the test set is split before the remainder is divided in folds 
                 to apply n-fold cross validation.
+                
             shuffle: bool (None)
                 shuffle the rows before splitting. None means True unless sequence() is called to process
                 the data as a (time) series.
+                
             random_state: int (None)
                 set a random_state for reproducible results
-            stratify: str or [ str ] (None)
-                apply stratified sampling. Per value for the given column, the rows are sampled. When a list
-                of columns is given, multi-label stratification is applied.
+                
+            stratify: str, [ str ], True or None (None)
+                Apply stratified sampling over these columns (True = all columns)
+                For multiple columns, multi-label stratification is applied with support over
+                continuous variables.
+                
+            stratify_test: str, [ str ], True or (None)
+                Apply stratified sampling over these columns (True = all columns)
+                For multiple columns, multi-label stratification is applied with support over
+                continuous variables.
+                If None, the value for stratify is used. To supress stratification, pass [].
             
         Returns: DFrame 
         """
-        r = self.reset_indices()
-        r._pt_valid_size = valid_size
-        r._pt_test_size = test_size
-        r._pt_split_shuffle = shuffle
-        r._pt_split_random_state = random_state
-        r._pt_split_stratify = [stratify] if type(stratify) == str else stratify
+        r = self.copy(deep=False)
+        r._change('_pt_valid_size', valid_size)
+        r._change('_pt_test_size', test_size)
+        r._change('_pt_split_shuffle', shuffle)
+        r._change('_pt_split_random_state', random_state)
+        r._change('_pt_split_stratify', [stratify] if type(stratify) == str else stratify)
+        r._change('_pt_split_stratify_test', [stratify_test] if type(stratify_test) == str else \
+                                    (r._pt_split_stratify if stratify_test is None else stratify_test))
         return r
     
     def folds(self, folds=5, shuffle=True, random_state=None, stratify=None, test=None):
@@ -1040,14 +1119,19 @@ class _DFrame:
                 SKLearn's SplitShuffle is used, therefore no guarantee is given that the splits are
                 different nor that the validation splits are disjoint. For large datasets, that should not
                 be a problem.
+                
             shuffle: bool (None)
                 shuffle the rows before splitting. None means True unless sequence() is called to process
                 the data as a (time) series.
+                
             random_state: int (None)
-                set a random_state for reproducible results
-            stratify: str or [ str ] (None)
-                apply stratified sampling. Per value for the given column, the rows are sampled. When a list
+                set a random_state for reproducible results.
+                
+            stratify: str, [ str ], True or None (None)
+                Apply stratified sampling over the given columns. True means all columns. If column 
+                Per value for the given column, the rows are sampled. When a list
                 of columns is given, multi-label stratification is applied.
+                
             test: bool (None)
                 whether to use one fold as a test set. The default None is interpreted as True when
                 split is not used. Often for automated n-fold cross validation studies, the validation set
@@ -1057,14 +1141,21 @@ class _DFrame:
         Returns: copy of DFrame 
             schedules the data to be split in folds.
         """
-        r = self.reset_indices()
-        r._pt_folds = folds
-        r._pt_folds_shuffle = shuffle
-        r._pt_folds_random_state = random_state
-        r._pt_folds_stratify = [stratify] if type(stratify) == str else stratify
+        assert type(folds) == int and folds > 1, 'You have to set split(folds) to an integer > 1'
+        r = self.copy(deep=False)
+        r._change('_pt_folds', folds)
+        r._change('_pt_folds_shuffle', shuffle)
+        r._change('_pt_folds_random_state', random_state)
+        r._change('_pt_folds_stratify', [stratify] if type(stratify) == str else stratify)
         if test or (r._pt_test_size is None and test is None):
-            r._pt_test_size = 1
+            r._change('_pt_test_size', 1)
         return r
+    
+    def leave_one_out(self):
+        """
+        Configures folds() to perform a leave-one-out cross validation.
+        """
+        return self.folds(len(self._indices_after_testsplit), shuffle=False)
         
     def polynomials(self, degree, include_bias=False):
         """
@@ -1079,8 +1170,8 @@ class _DFrame:
         Returns: copy of DFrame 
         """
         assert type(self._pt_scale_columns) != list or len(self._pt_scale_columns) == 0, 'You cannot combine polynomials with column specific scaling'
-        r = self._copy_with_indices()
-        r._pt_polynomials = PolynomialFeatures(degree, include_bias=include_bias)
+        r = self.copy(deep=False)
+        r._change('_pt_polynomials', PolynomialFeatures(degree, include_bias=include_bias))
         return r
     
     def no_columny(self):
@@ -1093,11 +1184,11 @@ class _DFrame:
 
         Returns: copy of DFrame
         """
-        r = self._copy_with_indices()
-        r._pt_columny = [self._pt_columnx[0]]
+        r = self.copy(deep=False)
+        r._change('_pt_columny', [self._pt_columnx[0]])
         return r
     
-    def columny(self, columns=None, vector=False):
+    def columny(self, columns=None, vector=None):
         """
         Configures the generated target variable and shape.
         
@@ -1107,19 +1198,20 @@ class _DFrame:
             columns: str or list of str (None)
                 single column name or list of columns that is to be used as target column. 
                 None: use the last column
-            vector: bool (False)
-                Some algorithms (e.g. knn) prefer y as a vector instead of an (n, 1) matrix. Setting 
-                vector=True returns the target variable as a vector instead of an (n, 1) matrix. This
-                can only be chosen when there is at most 1 target variable.
+            vector: bool (None)
+                By default, y will be prepared as a 1d vector and y_tensor as an (n, 1) matrix
+                because most SKLearn algorithmms prefer vector and for PyTorch (n, 1) matrices 
+                are used more often. Setting vector=False causes both y and y_tensor to return 1d shapes
+                and vector=True causes both y and y_tensor to return (n, 1) shapes.
         
         Returns: DFrame 
         """
         
-        r = self._copy_with_indices()
+        r = self.copy(deep=False)
         if columns is not None:
-            r._pt_columny = [columns] if type(columns) == str else columns
+            r._change('_pt_columny', [columns] if type(columns) == str else columns)
         assert r._pt_columny is None or len(r._pt_columny) == 1 or not vector, 'You cannot create target vector with multiple columns'
-        r._pt_vectory = vector
+        r._change('_pt_vectory', vector)
         return r
 
     def columnx(self, *columns, omit=False):
@@ -1139,11 +1231,11 @@ class _DFrame:
         
         Returns: DFrame
         """
-        r = self._copy_with_indices()
+        r = self.copy(deep=False)
         if omit:
-            r._pt_columnx = [ c for c in self.columns if c not in columns ]
+            r._change('_pt_columnx', [ c for c in self.columns if c not in columns ])
         else:
-            r._pt_columnx = list(columns) if len(columns) > 0 else None
+            r._change('_pt_columnx', list(columns) if len(columns) > 0 else None)
         return r
     
     def category(self, *columns, sort=False):
@@ -1169,9 +1261,9 @@ class _DFrame:
         """
         assert self._pt_polynomials is None, 'You cannot combine categories with polynomials'
         assert self._pt_bias is None, 'You cannot combine categories with polynomials'
-        r = self._copy_with_indices()
-        r._pt_category = columns
-        r._pt_category_sort = sort
+        r = self.copy(deep=False)
+        r._change('_pt_category', columns)
+        r._change('_pt_category_sort', sort)
         return r
     
     def dummies(self, *columns):
@@ -1192,8 +1284,8 @@ class _DFrame:
         """
         assert self._pt_polynomials is None, 'You cannot combine categories with polynomials'
         assert self._pt_bias is None, 'You cannot combine categories with polynomials'
-        r = self._copy_with_indices()
-        r._pt_dummies = columns
+        r = self.copy(deep=False)
+        r._change('_pt_dummies', columns)
         return r
 
     def sequence(self, window, shift_y = 1):
@@ -1220,12 +1312,77 @@ class _DFrame:
         
         Returns: DFrame
         """
-        r = self._copy_with_indices()
-        r._pt_sequence_window = window
-        r._pt_sequence_shift_y = shift_y
+        r = self.copy(deep=False)
+        r._change('_pt_sequence_window', window)
+        r._change('_pt_sequence_shift_y', shift_y)
+        return r
+        
+    def filterna(self, filter=True):
+        """
+        Returns: a DataFrame in which rows with missing values are filtered
+        from the train and valid set. The result is not visible in the DataFrame
+        but will be in the resulting train and valid sets.
+        
+        Args:
+            filter: bool (True)
+                Default is to drop rows in de DSet's that still have missing values.
+                Set to false to turn off
+        """
+        r = self.copy(deep=False)
+        r._change('_pt_filterna', filter)
         return r
     
-    def train_transforms(self, *transforms):
+    def columnfunction(self, **columnfunctions):
+        """
+        Returns: a DataFrame in which column transformations are added to the
+        data pipeline, before scaling the data.
+        
+        Transforms effectively adds to the existing configured column functions,
+        while overriding functions that are newly defined. This function does not
+        remove any column functions, unless called with zero parameters
+        
+        Args:
+            columnfunctions: { columname: callable}
+                when empty, all existing column functions will be erased,
+                otherwise, the given column functions are added to the dictionary
+                of configured column functions, which are executed in the pipeline
+                just before str column names and a function
+                that will be performed on the indicated column.
+        """
+
+        assert all([ c in self.columns for c in columnfunctions ]), 'Not all keys are columns'
+        r = self.copy(deep=False)
+        if r._pt_transform is None:
+            r._change('_pt_transform', columnfunctions)
+        else:
+            r._change('_pt_transform', r._pt_transform | columnfunctions)
+        return r
+    
+    def log(self, *columns):
+        """
+        Returns: a DataFrame in which log column transformations are added to the
+        data pipeline, before scaling the data.
+        
+        Args:
+            columnfunctions: { columname: callable}
+                a dictionary of str column names and a function
+                that will be performed on the indicated column.
+        """
+        return self.columnfunction( **{c:FunctionTransformer(np.log) for c in columns })
+        
+    def log1p(self, *columns):
+        """
+        Returns: a DataFrame in which log1p column transformations are added to the
+        data pipeline, before scaling the data.
+        
+        Args:
+            columnfunctions: { columname: callable}
+                a dictionary of str column names and a function
+                that will be performed on the indicated column.
+        """
+        return self.columnfunction( **{c:FunctionTransformer(np.log1p) for c in columns })
+    
+    def dataset_train_transforms(self, *transforms):
         """
         Configure a (list of) transformation function(s) that is called from the DataSet class to prepare the 
         train data.
@@ -1238,11 +1395,11 @@ class _DFrame:
 
         Returns: DFrame
         """
-        r = self._copy_with_indices()
-        r._pt_train_transforms = transforms
+        r = self.copy(deep=False)
+        r._change('_pt_dataset_train_transforms', transforms)
         return r
     
-    def transforms(self, *transforms):
+    def dataset_transforms(self, *transforms):
         """
         Configure a (list of) transformation function(s) that is called when retrieving
         items from PipeTorch' TransformableDataSet class to prepare the data. These function allow
@@ -1260,11 +1417,11 @@ class _DFrame:
                 
         Returns: DFrame
         """
-        r = self._copy_with_indices()
-        r._pt_transforms = transforms
+        r = self.copy(deep=False)
+        r._change('_pt_dataset_transforms', transforms)
         return r
 
-    def _train_transformation_parameters(self, train_dset):
+    def _dataset_train_transformation_parameters(self, train_dset):
         """
         Placeholder to extend DFrame to configure transformations that are applied on the train DataSet,
         but not on the validation or test set. This is used by
@@ -1283,19 +1440,19 @@ class _DFrame:
         """
         pass
     
-    def _pre_transforms(self):
+    def _dataset_pre_transforms(self):
         """
         Placeholder for standard transformations that precede configured transformations.
         """
         return []
     
-    def _post_transforms(self):
+    def _dataset_post_transforms(self):
         """
         Placeholder for standard transformations that succede configured transformations.
         """
         return []
     
-    def _transforms(self, pre=True, train=True, standard=True, post=True):
+    def _dataset_transforms(self, pre=True, train=True, standard=True, post=True):
         """
         Arguments:
             pre: bool (True) - whether to include pre transformations
@@ -1309,18 +1466,18 @@ class _DFrame:
         t = []
         try:
             if pre:
-                t.extend(self._pre_transforms())
+                t.extend(self._dataset_pre_transforms())
         except: pass
         try:
             if train:
-                t.extend(self._pt_train_transforms)
+                t.extend(self._pt_dataset_train_transforms)
         except: pass
         try:
-            t.extend(self._pt_transforms)
+            t.extend(self._pt_dataset_transforms)
         except: pass
         try:
             if post:
-                t.extend( self._post_transforms() )
+                t.extend( self._dataset_post_transforms() )
         except: pass
         return t
     
@@ -1368,7 +1525,77 @@ class _DFrame:
         df["Range"] = range_col
         df["Values"] = value_col
         return df
-    
+
+    def cross_validate_sklearn(self, model, *target, evaluator=None, annot={}, **kwargs):
+        """
+        On a DFrame that is configured for n-fold cross validation (df.folds(n)), this function iterates
+        over the trials, fitting an SKLearn model and storing the targets for the train, valid and test subsets.
+        
+        Arguments:
+            model: object
+                a machine learning algorithm that support the fit(X, y) and predict(X) methods,
+                like the SKLearn models.
+            target: callable
+                one or more functions that return an evaluation metrics when called with
+                target(y_true, y_predict)
+            evaluator: Evaluator (None)
+                when provided, the results are added to this evaluator, otherwise
+                the evaluator of this DFrame is reset and a new one is used.
+            annot: {}
+                the annotations that are stored with the metrics. cross_validate will add a
+                'fold' metric to indicate the fold.
+                
+        """
+        assert self._pt_folds is not None, 'You have to set df.folds before you can use cross validate'
+        assert self._pt_folds > 1, 'You have to set df.folds greater than 1 before you can use cross validate'
+        if reset_evaluator:
+            try:
+                del self._pt_evaluator
+            except: pass
+        evaluator = self.evaluator(*target)
+        study = evaluator.study(**kwargs)
+        data = self.iterfolds()
+        folds = self._pt_folds
+        test = len(self._test_indices) > 0
+                
+        def run(evaluator, trial):
+            df = next(data)
+            annot['fold'] = trial.number
+            model.fit(df.train_X, df.train_y)
+            evaluator._store_metrics(df.train_y, model.predict(df.train_X), 
+                                          annot={'phase':'train', **annot})
+            metrics = evaluator._store_metrics(df.valid_y, model.predict(df.valid_X), 
+                                                    annot={'phase':'valid', **annot})
+            if test:
+                metrics = evaluator._store_metrics(df.test_y, model.predict(df.test_X), 
+                                              annot={'phase':'test', **annot})
+            
+            return [ metrics[t] for t in study.target ]
+        
+        study.optimize(run, n_trials=folds)
+        return study
+
+    def study(self, *target, evaluator=None, **kwargs):
+        """
+        On a DFrame that is configured for n-fold cross validation (df.folds(n)), this function iterates
+        over the trials, fitting an SKLearn model and storing the targets for the train, valid and test subsets.
+        
+        Arguments:
+            target: callable
+                one or more functions that return an evaluation metrics when called with
+                target(y_true, y_predict)
+            evaluator: Evaluator (None)
+                when provided, the results are added to this evaluator, otherwise
+                the evaluator of this DFrame is reset and a new one is used.
+        """
+        if evaluator is None:
+            try:
+                del self._pt_evaluator
+            except: pass
+            evaluator = self.evaluator(*target)
+        study = evaluator.study(**kwargs)
+        return study
+
 class DFrame(pd.DataFrame, _DFrame):
     _metadata = _DFrame._metadata
     _internal_names = _DFrame._internal_names
@@ -1377,7 +1604,113 @@ class DFrame(pd.DataFrame, _DFrame):
     def __init__(self, data, *args, **kwargs):
         super().__init__(data, *args, **kwargs)
         _DFrame.__init__(self, data)
+        self._catch_change()
+
+    def _changed(self, f, *args, **kwargs):
+        #print(f'changed {f} {args} {kwargs}')
+        self._columns_changed()
+        return f(*args, **kwargs)
+
+    def _return_changed(self, f, *args, **kwargs):
+        r = f(*args, **kwargs)
+        r._columns_changed()
+        return r
+
+    def _change(self, key, value):
+        #print(f'changed_attr {key} {value}')
+        if key in self._config_indices_set:
+            self._index_changed()
+        elif key in self._config_set:
+            self._columns_changed()
+        return super().__setattr__(key, value)
+
+    def __changed_inplace(self, **kwargs):
+        try:
+            if kwargs['inplace']:
+                if r._unchanged():
+                    r._columns_changed()
+        except: pass
+        try:
+            if kwargs['copy'] == False:
+                if r._unchanged():
+                    r._columns_changed()
+        except: pass
+
+    
+    def _changed_inplace(self, f, *args, **kwargs):
+        #print(f'changed_inplace {f} {args} {kwargs}')
+        self.__changed_inplace(**kwargs)
+        r = f(*args, **kwargs)
+        r._columns_changed()
+        return r
+     
+    def _unchanged(self):
+        #print(f'process_changed {self._cached_changed} {self.index.equals(self._cached_index)}')
         
+        if self._cached_index is not None and self.index.equals(self._cached_index):
+            return True
+        self._index_changed()
+        return False
+    
+    def _catch_change_f(self, f):
+        return functools.wraps(f)(functools.partial(self._changed, f))
+    
+    def _catch_return_change_f(self, f):
+        return functools.wraps(f)(functools.partial(self._return_changed, f))
+    
+    def _catch_change_inplace_f(self, f):
+        return functools.wraps(f)(functools.partial(self._changed_inplace, f))
+    
+    def _catch_change(self):
+        self._set_value = self._catch_change_f(self._set_value)
+        self._setitem_slice = self._catch_change_f(self._setitem_slice)
+        self._setitem_frame = self._catch_change_f(self._setitem_frame)
+        self._setitem_array = self._catch_change_f(self._setitem_array)
+        self._set_item = self._catch_change_f(self._set_item)
+        self.__getitem__ = self._catch_return_change_f(self.__getitem__)
+        self.update = self._catch_change_f(self.update)
+        self.insert = self._catch_change_f(self.insert)
+
+        self._mgr.idelete = self._catch_change_f(self._mgr.idelete)
+        self._mgr.iset = self._catch_change_f(self._mgr.iset)
+        self._mgr.insert = self._catch_change_f(self._mgr.insert)
+        #self._mgr.column_setitem = self._catch_change_f(self._mgr.column_setitem)
+        #self._mgr.reindex_axis = self._catch_change_f(self._mgr.reindex_axis)
+        #self._mgr.reindex_indexer = self._catch_change_f(self._mgr.reindex_indexer)
+
+        self.clip = self._catch_change_inplace_f(self.clip)
+        self.drop = self._catch_change_inplace_f(self.drop)
+        self.drop_duplicates = self._catch_change_inplace_f(self.drop_duplicates)
+        #self.dropna = self._catch_change_inplace_f(self.dropna)
+        self.eval = self._catch_change_inplace_f(self.eval)
+
+        self.fillna = self._catch_change_inplace_f(self.fillna)
+        self.interpolate = self._catch_change_inplace_f(self.interpolate)
+        self.mask = self._catch_change_inplace_f(self.mask)
+        self.pad = self._catch_change_inplace_f(self.pad)
+        self.query = self._catch_change_inplace_f(self.query)
+        self.replace = self._catch_change_inplace_f(self.replace)
+        self.reset_index = self._catch_change_inplace_f(self.reset_index)
+        self.set_axis = self._catch_change_inplace_f(self.set_axis)
+        self.set_index = self._catch_change_inplace_f(self.set_index)
+        self.sort_index = self._catch_change_inplace_f(self.sort_index)
+        self.sort_values = self._catch_change_inplace_f(self.sort_values)
+        self.where = self._catch_change_inplace_f(self.where)
+        self.astype = self._catch_change_inplace_f(self.astype)
+        self.reindex = self._catch_change_inplace_f(self.reindex)
+        self.rename = self._catch_change_inplace_f(self.rename)
+        #self.__setattr__ = self._changed_attr
+
+    def dropna(self, **kwargs):
+        if self._pt_test_indices is not None:
+            warnings.warn("Using dropna on a dataset with a fixed test set " +
+                    "which is probably a bad idea since this removes test data.",
+                    RuntimeWarning,
+                    stacklevel=find_stack_level(),
+                )
+        self.__changed_inplace(**kwargs)
+        return pd.DataFrame.dropna(self, **kwargs)
+
     @classmethod
     def read_csv(cls, path, **kwargs):
         df = pd.read_csv(path, **kwargs)
@@ -1395,7 +1728,7 @@ class DFrame(pd.DataFrame, _DFrame):
         return r
     
     @classmethod
-    def read_from_kaggle(cls, dataset, train=None, test=None, shared=False, force=False, **kwargs):
+    def read_from_kaggle(cls, dataset, train=None, test=None, shared=True, force=False, **kwargs):
         """
         Reads a DFrame from a Kaggle dataset. The downloaded dataset is automatically stored so that the next time
         it is read from file rather than downloaded. See `read_csv`. The dataset is stored by default in a folder
@@ -1432,49 +1765,52 @@ class DFrame(pd.DataFrame, _DFrame):
 
         Returns: DFrame
         """
-        train = read_from_kaggle(dataset, filename=train, shared=shared, force=force, **kwargs)
+        k = Kaggle(dataset, shared=shared)
+        if force:
+            k.remove_user()
+        train = k.read(train, **kwargs)
         if test is not None:
-            test = read_from_kaggle(dataset, filename=test, **kwargs)
+            test = k.read(test, **kwargs)
             return cls.from_train_test(train, test)
         return cls(train)
            
-    @classmethod
-    def read_from_kaggle_competition(cls, dataset, train=None, test=None, shared=False, force=False, **kwargs):
-        train = read_from_kaggle_competition(dataset, filename=train, shared=shared, force=force, **kwargs)
-        if test is not None:
-            test = read_from_kaggle_competition(dataset, filename=test, **kwargs)
-            return cls.from_train_test(train, test)
-        return cls(train)
+#     @classmethod
+#     def read_from_kaggle_competition(cls, dataset, train=None, test=None, shared=False, force=False, **kwargs):
+#         train = read_from_kaggle_competition(dataset, filename=train, shared=shared, force=force, **kwargs)
+#         if test is not None:
+#             test = read_from_kaggle_competition(dataset, filename=test, **kwargs)
+#             return cls.from_train_test(train, test)
+#         return cls(train)
 
-    @classmethod
-    def read_csv(cls, url, filename=None, path=None, save=False, **kwargs):
-        """
-        Reads a .csv file from cache or url. The place to store the file is indicated by path / filename
-        and when a delimiter is used, this is also used to save the file so that the original delimiter is kept.
-        The file is only downloaded using the url if it does not exsists on the filing system. If the file is
-        downloaded and save=True, it is also stored for future use.
+#     @classmethod
+#     def read_csv(cls, url, filename=None, path=None, save=False, **kwargs):
+#         """
+#         Reads a .csv file from cache or url. The place to store the file is indicated by path / filename
+#         and when a delimiter is used, this is also used to save the file so that the original delimiter is kept.
+#         The file is only downloaded using the url if it does not exsists on the filing system. If the file is
+#         downloaded and save=True, it is also stored for future use.
 
-        Arguments:
-            url: str
-                the url to download or a full path pointing to a .csv file
-            filename: str (None)
-                the filename to store the downloaded file under. If None, the filename is extracted from the url.
-            path: str (None)
-                the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
-                dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
-            save: bool (False)
-                whether to save a downloaded .csv
-            **kwargs:
-                additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
-                you will have to set engine='python'.
+#         Arguments:
+#             url: str
+#                 the url to download or a full path pointing to a .csv file
+#             filename: str (None)
+#                 the filename to store the downloaded file under. If None, the filename is extracted from the url.
+#             path: str (None)
+#                 the path in which the file is stored. If None, it will first check the ~/.pipetorch (for sharing
+#                 dataset between users) and then ~/.pipetorchuser (for user specific caching of datasets).
+#             save: bool (False)
+#                 whether to save a downloaded .csv
+#             **kwargs:
+#                 additional parameters passed to pd.read_csv. For example, when a multichar delimiter is used
+#                 you will have to set engine='python'.
 
-        Returns: DFrame
-        """
-        return cls(read_csv(url, filename=filename, path=path, save=save, **kwargs))
+#         Returns: DFrame
+#         """
+#         return cls(read_csv(url, filename=filename, path=path, save=save, **kwargs))
    
     @classmethod
     def read_from_package(cls, package, filename, **kwargs):
-        return cls(read_from_package(package, filename))
+        return cls(read_from_package(package, filename, **kwargs))
     
     @classmethod
     def read_from_function(cls, filename, function, path=None, save=True, **kwargs):
@@ -1580,6 +1916,15 @@ class GroupedDFrame(DataFrameGroupBy, _DFrame):
     @property
     def _constructor_sliced(self):
         return GroupedDSeries
+    
+    def _unchanged(self):
+        return True
+    
+    def _index_changed(self):
+        pass
+        
+    def _columns_changed(self):
+        pass
     
     def get_group(self, namel, obj=None):
         return self._dframe( super().get_group(name, obj=obj) )

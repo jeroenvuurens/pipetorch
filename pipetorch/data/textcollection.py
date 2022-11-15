@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader, IterableDataset
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data.dataset import random_split
 from .databunch import Databunch
+from .kagglereader import Kaggle
+from .helper import path_shared, path_user, read_torchtext
 import numpy as np
 import torch
 import copy
@@ -12,6 +14,26 @@ import copy
 class TextCollection:
     """
     Setup an in memory text collection
+    
+    Args:
+        train: TextDataSet
+        valid: TextDataSet (None)
+        test: TextDataSet (None)
+        language: str ('basic_english')
+            the langage used by the tokenizer
+        min_freq: int (1)
+            the minimum document frequency for words to be added to the vocabulary
+        vocab: (None)
+            a vocabulary to use. If None, a new vocabulary will be made from the trainset
+        labels: LabelSet (None)
+            a set of labes to use. If None, a LabelSet is constructed from the train set
+        specials: tuple of str ('<unk>', 'pad')
+            special tokens that are added to the vocabulary. Most commonly, <unk> is used
+            for words that are not in the vocabulary and <pad> for making data points
+            the same size.
+        collate: callable (None)
+            a function to prepare a batch, for example by padding all sentences to equal
+            length.
     """
     
     def __init__(self, train, valid=None, test=None, language='basic_english', min_freq=1, vocab=None, 
@@ -27,19 +49,124 @@ class TextCollection:
         self.__collate = collate
     
     @classmethod
-    def from_iter(cls, train_iter, valid_iter=None, test_iter=None, language='basic_english', min_freq=1, specials=('<unk>', '<pad>')):
+    def from_iter(cls, train_iter, valid_iter=None, test_iter=None, **kwargs):
+        """
+        Reads a TextCollection from iterators. The most common use is from TorchText
+        DataSets.
+        
+        Arguments:
+            train_iter: str
+                iterator that is used as the train set, e.g. 'train.csv'
+            valid_iter: str (None)
+                iterator that is used as the valid set, e.g. 'valid.csv'
+            test_iter: str (None)
+                iterator that is used as the test set, e.g. 'test.csv'
+            **kwargs: see the TextCollection constructor for additional arguments
+                      such as language, min_freq, vocab, labels, special, collate 
+        Returns: TextCollection
+        """
         train = TextDataSet.from_iter(train_iter)
         valid = None if valid_iter is None else TextDataSet.from_iter(valid_iter)
         test = None if test_iter is None else TextDataSet.from_iter(test_iter)
-        return cls(train, valid=valid, test=test, language=language, min_freq=min_freq, specials=specials)
+        return cls(train, valid=valid, test=test, **kwargs)
     
     @classmethod
-    def from_csv(cls, train_filename, valid_filename=None, test_filename=None, language='basic_english', min_freq=1, specials=('<unk>', '<pad>')):
+    def from_csv(cls, train_filename, valid_filename=None, test_filename=None, **kwargs):
+        """
+        Reads a TextCollection from csv files. 
+        
+        Typically, the files are assumed to be organized in lines with the format: label, text
+        Although often these files have a .csv extension, the files are not true csv files.
+        
+        Example:
+            read_from_csv('train.csv', test_filename='test.csv', min_freq=1)
+            to combine a train and test set in a single TextCollection
+
+        Arguments:
+            train_filename: str
+                the filename that is used as the train set, e.g. 'train.csv'
+            valid_filename: str (None)
+                the filename that is used as the valid set, e.g. 'valid.csv'
+            test_filename: str (None)
+                the filename that is used as the test set, e.g. 'test.csv'
+            **kwargs: see the TextCollection constructor for additional arguments
+                      such as language, min_freq, vocab, labels, special, collate 
+        Returns: TextCollection
+        """
         train = TextDataSet.from_csv(train_filename)
         valid = None if valid_filename is None else TextDataSet.from_csv(valid_filename)
         test = None if test_filename is None else TextDataSet.from_csv(test_filename)
-        return cls(train, valid=valid, test=test, language=language, min_freq=min_freq, specials=specials)
+        return cls(train, valid=valid, test=test, **kwargs)
 
+    @classmethod
+    def from_kaggle(cls, dataset, train=None, valid=None, test=None, shared=True, force=False, **kwargs):
+        """
+        Reads a TextCollection from a Kaggle dataset. The files are forwarded to from_csv().
+        
+        The downloaded dataset is automatically stored so that the next time
+        it is read from file rather than downloaded. 
+        The dataset is stored by default in a folder
+        with the dataset name in `~/.pipetorchuser`. 
+
+        If the dataset is not cached, this functions requires a valid .kaggle/kaggle.json file, that you can 
+        create manually or with the function `create_kaggle_authentication()`.
+
+        Note: there is a difference between a Kaggle dataset and a Kaggle competition. For the latter, 
+        you have to use `read_from_kaggle_competition`.
+
+        Example:
+            read_from_kaggle('yufengdev/bbc-text-categorization')
+                to read/download `https://www.kaggle.com/datasets/yufengdev/bbc-text-categorization`
+
+        Arguments:
+            dataset: str
+                the username/dataset part of the kaggle url, e.g. uciml/autompg-dataset for 
+            train: str (None)
+                the filename that is used as the train set, e.g. 'train.csv'
+            valid: str (None)
+                the filename that is used as the valid set, e.g. 'valid.csv'
+            test: str (None)
+                the filename that is used as the test set, e.g. 'test.csv'
+            shared: bool (False)
+                save the dataset in ~/.pipetorch instead of ~/.pipetorchuser, allowing to share downloaded
+                files between users.
+            force: bool (False)
+                when True, the dataset is always downloaded
+            **kwargs: see the TextCollection constructor for additional arguments
+                      such as language, min_freq, vocab, labels, special, collate 
+        Returns: TextCollection
+        """
+        k = Kaggle(dataset, shared=shared)
+        if force:
+            k.remove_user()
+        train = k.file(train)
+        if test is not None:
+            test = k.file(test)
+        if valid is not None:
+            valid = k.file(valid)
+        return cls.from_csv(train, valid_filename=valid, test_filename=test, **kwargs)
+
+    @classmethod
+    def from_torchtext(cls, func, min_freq=1, collate='pad', **kwargs): 
+        """
+        Reads a TextCollection from a torchtext data function.
+        
+        Arguments:
+            func: callable
+                from torchtext.datasets, a a function that behaves similarly and returns
+                a train and test iterator for the dataset. By default the datasets are
+                cached in the .pipetorchuser folder or used from the .pipetorch folder
+                if present.
+            **kwargs: see the TextCollection constructor for additional arguments
+                      such as language, min_freq, vocab, labels, special, collate 
+        Returns: TextCollection
+        """
+        try:
+            train_iter, test_iter = read_torchtext( func )
+        except:
+            raise ValueError(f'cannot convert given function {func} to an iterator. Is it a torchtext data function?')
+        return cls.from_iter(train_iter=train_iter, test_iter=test_iter, min_freq=min_freq, collate=collate, **kwargs)
+            
     @property
     def _collate(self):
         return self.__collate

@@ -97,16 +97,16 @@ class ConvNet(nn.Module):
         for i, o in zip(layers[:-1], layers[1:]):
             if batchnorm:
                 layer = nn.Sequential( 
-                    nn.Conv2d(i, o, kernel_size=(hkernel, vkernel), stride=(hstride, vstride), padding=(hpadding, vpadding)),
                     nn.BatchNorm2d(o),
+                    nn.Conv2d(i, o, kernel_size=(hkernel, vkernel), stride=(hstride, vstride), padding=(hpadding, vpadding)),
                     nn.ReLU(),
                     nn.MaxPool2d(kernel_size=(hpool_size, vpool_size), stride=(hpool_stride, vpool_stride)))
             elif dropout:
                 layer = nn.Sequential( 
+                    nn.Dropout2d(p=dropout),
                     nn.Conv2d(i, o, kernel_size=(hkernel, vkernel), stride=(hstride, vstride), padding=(hpadding, vpadding)),
                     nn.ReLU(),
                     nn.MaxPool2d(kernel_size=(hpool_size, vpool_size), stride=(hpool_stride, vpool_stride)),
-                    nn.Dropout2d(p=dropout)
                 )
             else:
                 layer = nn.Sequential( 

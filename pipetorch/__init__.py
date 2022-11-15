@@ -8,10 +8,10 @@ import matplotlib.pyplot as plt
 from .data.dframe import DFrame
 from .data.databunch import Databunch
 from .data.textcollection import TextCollection
-from .data.datasets import read_torchtext, wine_quality, telco_churn, movielens_ratings, movielens_movies, movielens_users, dam_outflow, boston_housing_prices, iris, bank_marketing, auto_mpg, big_mart_sales, advertising_channels, titanic, indian_liver, air_passengers, ames_housing, diamonds, california, occupancy, ag_news, ames_housing, boston_housing_prices, heart_disease, hotel_booking, hotel_test, hotel_test_score, bbc_news, speeddate
+from .data.datasets import read_torchtext, wine_quality, telco_churn, movielens_ratings, movielens_movies, movielens_users, dam_outflow, boston_housing_prices, iris, bank_marketing, auto_mpg, big_mart_sales, advertising_sales, titanic, indian_liver, air_passengers, ames_housing, diamonds, california, occupancy, ag_news, ames_housing, boston_housing_prices, heart_disease, hotel_booking, hotel_test, hotel_test_score, bbc_news, speeddate
 from .data.imagedframe import ImageDFrame, ImageDatabunch
 from .data.imagedatasets import mnist, mnist3, crawl_images, filter_images, image_folder, create_path, cifar, fashionmnist
-from .data.helper import create_kaggle_authentication
+from .data.kagglereader import Kaggle, create_kaggle_authentication
 from .train.trainer import Trainer, Trainer as trainer
 from .model.perceptron import Perceptron
 from .model.convnet import ConvNet

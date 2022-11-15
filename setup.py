@@ -27,7 +27,7 @@ setup(
      url="https://github.com/jeroenvuurens/pipetorch",
      download_url="https://github.com/jeroenvuurens/pipetorch/archive/refs/tags/v0.1a.tar.gz",
      keywords=['PyTorch', 'SKLearn', 'Machine Learning', 'Neural Network', 'Predictive Analytics'],
-     install_requires=['torch', 'torchvision', 'numpy', 'sklearn', 'matplotlib', 'pandas', 'pathlib', 'tqdm', 'statistics', 'iterative-stratification', 'optuna'],
+     install_requires=['torch', 'torchvision', 'numpy', 'scikit-learn', 'matplotlib', 'pandas', 'tqdm', 'iterative-stratification', 'optuna', 'seaborn', 'kaggle'],
      classifiers=alpha
  )
 

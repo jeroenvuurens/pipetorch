@@ -1,5 +1,5 @@
 from ..data.dframe import DFrame, Databunch
-from ..data.helper import dataset_path
+from ..data.kagglereader import Kaggle
 from torchvision.datasets import ImageFolder
 from torchvision.transforms import transforms
 from torch.utils.data import random_split
@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from PIL import Image, ImageStat
 import random
+from pathlib import Path
 
 def LoadImage(fp):
     return Image.open(fp[0])
@@ -122,7 +123,7 @@ class ImageDatabunch(Databunch):
             
 
 class ImageDFrame(DFrame):
-    _metadata = DFrame._metadata + ['_pt_transforms', '_pt_normalize', '_pt_normalized_mean', '_pt_normalized_std',
+    _metadata = DFrame._metadata + ['_pt_dataset_transforms', '_pt_normalize', '_pt_normalized_mean', '_pt_normalized_std',
                                     '_pt_classes', '_pt_class_to_idx']
 
     _internal_names = DFrame._internal_names + ['_pt__locked_normalized_mean', '_pt__locked_normalized_std']
@@ -135,31 +136,24 @@ class ImageDFrame(DFrame):
         self._pt__locked_normalized_mean = None
         self._pt__locked_normalized_std = None
         self.normalize()
-        self.classes = classes
+        self._pt_classes = classes
         
     @classmethod
     def read_from_kaggle(cls, dataset, filename=None, shared=False, force=False, **kwargs):
+        k = Kaggle(dataset, shared=shared)
         if force:
-            try:
-                path = path_user(dataset)
-                shutil.rmtree(path)
-            except: pass
-        path = dataset_path(dataset)
-        if force or not path.exists():
-            kaggle_download(dataset, shared=shared)
-        path = dataset_path(dataset)
-        assert path.exists(), f'Problem downloading Kaggle dataset {dataset}'
-        rootfolder = None
-        if filename is None:
-            filename = '**/*'
-        files = list(path.glob(filename))
-        assert len(files) == 1, f'There are multiple files that match {files}, set filename to select a file'
-        return cls.from_image_folder(path / files[0])
+            k.remove_user()
+        folder = k.file(filename)
+        subfolders = len([ 1 for file in folder.glob('**/*') if file.is_dir() ])
+        if subfolders > 1:
+            return cls.from_image_folder(folder)
+        else:
+            return cls.from_image_files(folder, **kwargs)
 
-    def to_databunch(self, dataset=None, batch_size=32, valid_batch_size=None, 
+    def to_databunch(self, datasetclass=None, batch_size=32, valid_batch_size=None, 
                      num_workers=0, shuffle=True, pin_memory=False, 
                      balance=False, collate=None):
-        return ImageDatabunch(*self.to_datasets(dataset=dataset), 
+        return ImageDatabunch(*self.to_datasets(datasetclass=datasetclass), 
                          batch_size=batch_size, valid_batch_size=valid_batch_size,
                          num_workers=num_workers, shuffle=shuffle, 
                          pin_memory=pin_memory, balance=balance, collate=collate, classes=self.classes,
@@ -183,10 +177,10 @@ class ImageDFrame(DFrame):
             self._pt_classes = value
             self._pt_class_to_idx = { c:i for i, c in enumerate(value) }
     
-    def _pre_transforms(self):
+    def _dataset_pre_transforms(self):
         return [ LoadImage ]
     
-    def _post_transforms(self):
+    def _dataset_post_transforms(self):
         return [ transforms.ToTensor() ]
     
     def _train_transformation_parameters(self, train_dset):
@@ -262,8 +256,8 @@ class ImageDFrame(DFrame):
     def normalized_std(self, value):
         self._pt__locked_normalized_std = value
         
-    def _transforms(self, pre=True, train=True, standard=True, post=True, normalize=True):
-        t = super()._transforms(pre=pre, train=train, standard=standard, post=post)
+    def _dataset_transforms(self, pre=True, train=True, standard=True, post=True, normalize=True):
+        t = super()._dataset_transforms(pre=pre, train=train, standard=standard, post=post)
         if normalize and self._pt__locked_normalized_mean is not None and self._pt__locked_normalized_std is not None:
             t.append(transforms.Normalize(mean=self._pt__locked_normalized_mean, 
                                           std=self._pt__locked_normalized_std))
@@ -274,7 +268,7 @@ class ImageDFrame(DFrame):
         returns a version of the train DataSet, for which normalization and post_transforms are turned off
         in other words, this will return the images just before they are converted to tensors. 
         """
-        return self.dtype(False)._dset_indices(self._train_indices, self._transforms(post=False, normalize=False)).to_dataset()
+        return self.dtype(False)._dset_indices(self._train_indices, self._dataset_transforms(post=False, normalize=False)).to_dataset()
     
     def show_batch(self, rows=3, imgsize=(20,20), figsize=(10,10)):
         """
@@ -296,11 +290,11 @@ class ImageDFrame(DFrame):
         except:
             folder = ImageFolder(root=folder)
         r = ImageDFrame(folder.samples, columns=['filename', 'target'], classes=folder.classes)
-        r.target = r.target.astype(np.float32)
+        r.target = r.target.astype(np.int64)
         return r
     
     @classmethod
-    def from_image_folder(cls, folder, **kwargs):
+    def from_image_folder(cls, folder):
         """
         Construct an ImageDFrame from the filelist that is obtained from TorchVision's ImageFolder,
         in other words, the subfolders are the class labels assigned to the files they contain.
@@ -313,6 +307,44 @@ class ImageDFrame(DFrame):
         except:
             folder = ImageFolder(root=folder)
         r = ImageDFrame(folder.samples, columns=['filename', 'target'], classes=folder.classes)
-        r.target = r.target.astype(np.long)
-        return r.columny(vector=True)
+        r.target = r.target.astype(np.int64)
+        return r
+
+    @classmethod
+    def from_image_files(cls, folder, ext=None, omit=None, delimiter='.'):
+        """
+        Construct an ImageDFrame from a folder with files in which the
+        first part of the filename indicates the class label, e.g. horse.1.jpg,
+        cow.2.jpg.
+        
+        Args:
+            folder: str or Path
+                folder containing the files
+            ext: str (None)
+                extension of the files that are included as images
+            omit: [ str ] (None)
+                omit all files that end with any of the give strings
+            delimiter: str ('.')
+                delimiter used to obtain the class label from the filename.
+                By default a '.' is used, in which case horse.1.jpg will use the
+                name 'horse' as its class label.
+        """
+        if type(folder) == str:
+            folder = Path(folder)
+        if ext:
+            files = list(folder.glob(f'*.{ext}'))
+        else: 
+            files = list(folder.glob('*'))
+        if omit is not None:
+            for o in omit:
+                files = [ f for f in files if not f.endswith(o) ]
+        classes = [ ('/' + str(f)).split('/')[-1] for f in files ]
+        classes = [ c.split(delimiter)[0] for c in classes ]
+        uniqueclasses = list(set(classes))
+        str2class = { c:i for i, c in enumerate(uniqueclasses) }
+        classes = [ str2class[c] for c in classes ]
+        files = [ (str(f), c) for f, c in zip(files, classes) ]
+        r = ImageDFrame(files, columns=['filename', 'target'], classes=uniqueclasses)
+        r.target = r.target.astype(np.int64)
+        return r
 

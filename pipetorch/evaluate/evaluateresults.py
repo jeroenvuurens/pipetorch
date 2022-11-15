@@ -110,7 +110,7 @@ class EvaluatorResults(pd.DataFrame):
               ylabel = None, 
               title=None, 
               loc='best', 
-              fig=plt, 
+              fig=None, 
               legendargs={}, 
               **kwargs):
         f = _figure(self, x=x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, fig=fig)
@@ -124,9 +124,10 @@ class EvaluatorResults(pd.DataFrame):
              xlabel = None, 
              ylabel = None, 
              title=None, 
-             fig=plt, 
+             fig=None, 
              legendargs={}, 
              **kwargs):
+        fig = fig or plt
         self._plot(fig.plot, x, y=y, xlabel=xlabel, ylabel=ylabel, title=title, 
                    fig=fig, legendargs=legendargs, **kwargs)
     
@@ -136,9 +137,10 @@ class EvaluatorResults(pd.DataFrame):
                 xlabel = None, 
                 ylabel = None, 
                 title=None, 
-                fig=plt, 
+                fig=None, 
                 legendargs={}, 
                 **kwargs):
+        fig = fig or plt
         self._plot(fig.scatter, x, y=y, xlabel=xlabel, ylabel=ylabel, 
                    title=title, fig=fig, legendargs=legendargs, **kwargs)
         
@@ -150,7 +152,7 @@ class EvaluatorResults(pd.DataFrame):
                     ylabel = None, 
                     title=None, 
                     label_prefix='', 
-                    fig=plt,
+                    fig=None,
                     legendargs={},
                     **kwargs):
         self.evaluator.line_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, 
@@ -164,7 +166,7 @@ class EvaluatorResults(pd.DataFrame):
                        ylabel = None, 
                        title=None, 
                        label_prefix='', 
-                       fig=plt,
+                       fig=None,
                        legendargs={},
                        **kwargs):
         self.evaluator.scatter_metric(x, series=series, select=self, y=y, xlabel=xlabel, ylabel=ylabel, 
@@ -178,7 +180,8 @@ class _figure:
                  xlabel = None, 
                  ylabel = None, 
                  title = None, 
-                 fig=plt ):
+                 fig=None ):
+        fig = fig or plt
         self.evaluator = results.evaluator
         self.results = results
         self.x = x

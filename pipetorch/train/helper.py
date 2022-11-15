@@ -4,6 +4,7 @@ import matplotlib
 from matplotlib import pyplot as plt
 import matplotlib.patheffects as PathEffects
 # from IPython.core import pylabtools as pt
+from functools import partial
 from pathlib import Path
 from sklearn.manifold import TSNE
 import seaborn as sns
@@ -30,6 +31,28 @@ def getsizeof(o, ids=set()):
         return r + sum(d(x, ids) for x in o)
 
     return r
+
+def partial_replace_args(func, *args, **kwargs):
+    if hasattr(func, "func"):
+        if len(args) == 0:
+            args = func.args
+        kwargs = {**func.keywords, **kwargs}
+        func = func.func
+    return partial(func, *args, **kwargs)
+
+def optimizer_to(optim, device):
+    for param in optim.state.values():
+        # Not sure there are any global tensors in the state dict
+        if isinstance(param, torch.Tensor):
+            param.data = param.data.to(device)
+            if param._grad is not None:
+                param._grad.data = param._grad.data.to(device)
+        elif isinstance(param, dict):
+            for subparam in param.values():
+                if isinstance(subparam, torch.Tensor):
+                    subparam.data = subparam.data.to(device)
+                    if subparam._grad is not None:
+                        subparam._grad.data = subparam._grad.data.to(device)
 
 class Plot:
     def __init__(self, xlabel=None, ylabel='Loss', xscale=None, yscale='log', **kwargs):

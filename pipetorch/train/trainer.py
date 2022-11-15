@@ -2,20 +2,20 @@ import torch
 from torch.autograd import Variable
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
+from torch.optim import AdamW, Adam, RMSprop, Adadelta, Adagrad, Adamax, LBFGS, SGD, SparseAdam
 import timeit
 import sys
 import copy
 import inspect
 import numpy as np
 import math
-#from tqdm.notebook import tqdm
 from ..evaluate.evaluate import Evaluator
 from ..helper import run_magic
 from torch.optim.lr_scheduler import OneCycleLR, ConstantLR
 from .tuner import *
-from .helper import nonondict, tqdm_trainer
+from .helper import nonondict, tqdm_trainer, partial_replace_args, optimizer_to
 from functools import partial
+import pandas as pd
 import os
     
 def to_numpy(arr):
@@ -51,15 +51,21 @@ class ordered_dl:
         if exc_type is not None:
             return False
 
+def argmax(y):
+    return torch.argmax(y, dim=1)
+
+def identity(x):
+    return x
+
 POST_FORWARD = {nn.L1Loss:None, 
                 nn.MSELoss:None, 
-                nn.CrossEntropyLoss:lambda y: torch.argmax(y, dim=1),
-                nn.NLLLoss: lambda y: torch.argmax(y, dim=1), 
-                nn.PoissonNLLLoss: lambda y: torch.argmax(y, dim=1), 
-                nn.GaussianNLLLoss: lambda y: torch.argmax(y, dim=1), 
-                nn.KLDivLoss: lambda y: torch.argmax(y, dim=1), 
-                nn.BCELoss: lambda y: torch.round(y), 
-                nn.BCEWithLogitsLoss: lambda y: torch.round(y), 
+                nn.CrossEntropyLoss:argmax,
+                nn.NLLLoss: argmax, 
+                nn.PoissonNLLLoss: argmax, 
+                nn.GaussianNLLLoss: argmax, 
+                nn.KLDivLoss: argmax, 
+                nn.BCELoss: torch.round, 
+                nn.BCEWithLogitsLoss: torch.round, 
                 nn.HuberLoss: None,
                 nn.SmoothL1Loss: None
                }
@@ -90,15 +96,17 @@ class Trainer:
             Typically, the callable is a function from SKLearn.metrics
             like mean_squared_error or recall_score.
             
-        optimizer: PyTorch Optimizer (AdamW)
-            The PyTorch or custom optimizer class that is used during training
+        optimizer: PyTorch Optimizer or str (AdamW)
+            The PyTorch or custom optimizer CLASS (not an instance!) that is 
+            used during training.
             
-        optimizer_params: dict (None)
-            the parameters that are passed (along with the model parameters)
-            to initialize an optimizer. A 'nonondict' is used, meaning that
-            when a None value is set, the key is removed, so that the default
-            value is used instead.
-            
+            You can either provide:
+            - an optimizer CLASS from the torch.optim module,
+            - a custom optimizer CLASS that obeys the same API, 
+            - a partial of an optimizer CLASS with optimization arguments set
+            - 'AdamW', 'Adam', 'RMSprop', 'Adadelta', 'Adagrad', 'Adamax', 
+              'LBFGS', 'SGD', or 'SparseAdam'
+                        
         scheduler: None, OneCycleLR, ConstantLR
             used to adapt the learning rate: 
             - None will use a constant learning rate
@@ -109,14 +117,14 @@ class Trainer:
               'cycle' when calling 'train' to restart ConstantLR 
               every 'cycle' epochs.
               
-        scheduler_params: dict (None)
-            additional parameters that are passed when initializing the scheduler
-
         weight_decay: float
-            Apply weight_decay regularization with the AdamW optimizer
+            When set, the trainer will attempt to instantiate an optimizer
+            with weight_decay set. When the optimizer does not support weight
+            decay, it will fail.
             
-        momentum: float
-            Apply momentum with the AdamW optimizer
+        betas: float
+            When set, the trainer will attempt to instantiate an optimizer
+            with betas set. When the optimizer does not support betas it will fail.
             
         random_state: int
             used to set a random state for reproducible results
@@ -171,12 +179,10 @@ class Trainer:
                  loss, 
                  *data, 
                  metrics = [], 
-                 optimizer=AdamW, 
-                 optimizer_params=None, 
+                 optimizer='AdamW', 
                  scheduler=None, 
-                 scheduler_params=None,
                  weight_decay=None, 
-                 momentum=None, 
+                 betas=None, 
                  gpu=False,
                  random_state=None, 
                  evaluator=None, 
@@ -188,31 +194,59 @@ class Trainer:
         self.loss = loss
         self.random_state = random_state
         self.gpu(gpu)
-        self.set_data(*data)
+        self.data = data
         self._model = model
         self._debug = debug
         self._set_post_forward(post_forward, model, loss)
         self.optimizer = optimizer
-        self.optimizer_params = optimizer_params
         self.scheduler = scheduler
-        self.scheduler_params = scheduler_params
         if self.random_state is not None:
             torch.backends.cudnn.deterministic=True
             torch.manual_seed(self.random_state)
         self._commit = {}
         self.epochid = 0
+        self.batch = 0
         self.weight_decay = weight_decay
-        self.momentum = momentum
-        self.lowest_score=None
-        self.highest_score=None
+        self.betas = betas
+        self.lowest_validloss=None
+        self.lowest_validtest_loss=None
+        self.lowest_validtest_y=None
+        self.lowest_validtest_y_pred=None
         if evaluator is not None:
-            assert len(metrics) == 0, 'When you assign an evaluator, you cannot assign different metrics to a trainer'
+            assert metrics == [], 'When you assign an evaluator, you cannot assign different metrics to a trainer'
             self._evaluator = evaluator
             self.metrics = evaluator.metrics
         else:
             self.metrics = metrics
 
-    def set_data(self, *data):
+    def copy(self):
+        if self.databunch is not None:
+            data = [ self.databunch ]
+        else:
+            data = self.train_dl, self.valid_dl
+        return Trainer(self.model, self.loss, 
+                 *self.data, 
+                 metrics=self.metrics, 
+                 optimizer=self._optimizer_class, 
+                 scheduler=self._scheduler_class, 
+                 weight_decay=self.weight_decay, 
+                 betas=self.betas, 
+                 gpu=self.device,
+                 random_state=self.random_state, 
+                 post_forward=self.post_forward)
+    
+    @property
+    def data(self):
+        if self.databunch is not None:
+            return [ self.databunch ]
+        else:
+            try:
+                return self.train_dl, self.valid_dl, self.test_dl
+            except:
+                return self.train_dl, self.valid_dl
+    
+    @data.setter
+    def data(self, data):
         """
         Changes the dataset that is used by the trainer
         
@@ -225,9 +259,19 @@ class Trainer:
                 are used to iterate over the respective datasets
                 for training and validation.
         """
-        assert len(data) > 0, 'You have to specify a data source. Either a databunch or a set of dataloaders'
-        if len(data) == 1:
-            self.databunch = data[0]
+        try:
+            iter(data)
+        except:
+            data = data,
+        if len(data) == 0:
+            raise TypeError('You must specify a data source')
+        elif len(data) == 1:
+            try:
+                data[0].train_dl
+                data[0].valid_dl
+                self.databunch = data[0]
+            except:
+                raise TypeError('Single datasources must have train_dl and valid_dl properties, like a Databunch')
         elif len(data) < 4:
             try:
                 _ = iter(data[0])
@@ -245,18 +289,21 @@ class Trainer:
                     self.test_dl = data[2]
                 except TypeError:
                     raise TypeError('The third data source must be iterable, preferably a DataLoader that provide an X and y')
+        else:
+            raise TypeError('You must specify a data source. Either a databunch or a set of max. 3 dataloaders')
 
+        
     def _set_post_forward(self, post_forward, model, loss):
         if post_forward:
             self.post_forward = post_forward
             return
         if post_forward == False:
-            self.post_forward = lambda y:y
+            self.post_forward = identity
         try:
             self.post_forward = model.post_forward
             return
         except:
-            self.post_forward = lambda y:y
+            self.post_forward = identity
             for l, func in POST_FORWARD.items():
                 try:
                     if loss.__class__ == l:
@@ -284,7 +331,7 @@ class Trainer:
             return self._evaluator
             
     def __repr__(self):
-        return 'Trainer( ' + self.model + ')'
+        return 'Trainer( ' + repr(self.model) + ')'
 
     def to(self, device):
         """
@@ -444,68 +491,80 @@ class Trainer:
         except: pass
         return self.lr
 
-    def set_optimizer_param(self, key, value):
-        """
-        Set a parameter for the optimizer. A 'nonondict' is used, 
-        meaning that setting a value to None will cause the default
-        to be used.
-        
-        Argument:
-            key: str
-                the key to use
-                
-            value: any
-                the value to use. When set to None, the key is removed.
-        """
-        self.optimizer_params[key] = value
-        try:
-            del self._optimizer
-            del self._scheduler
-        except: pass
-
     @property
     def weight_decay(self):
         """
         Returns: the current value for the weight decay regularization
-        
-        only works when using an Adam(W) optimizer
         """
-        return self.optimizer.param_groups[0]['weight_decay']
+        return self._weight_decay
 
     @weight_decay.setter
     def weight_decay(self, value):
         """
-        Sets the weight decay regularization on the Adam(W) optimizer
+        Sets the weight decay regularization
+        only works when the optimizer class supports this.
         """
-        self.set_optimizer_param('weight_decay', value)
+        self.del_optimizer()
+        self._weight_decay = value
 
     @property
-    def momentum(self):
+    def betas(self):
         """
-        Returns the momentum value on the Adam(W) optimizer
+        Returns the betas parameter for the optimizer
         """
-        return self.optimizer.param_groups[0]['betas']
+        return self._betas
 
-    @momentum.setter
-    def momentum(self, value):
+    @betas.setter
+    def betas(self, value):
         """
-        Sets the momentum value on the Adam(W) optimizer
+        Sets the betas parameter that is used to instantiate an optimizer
+        only works when the optimizer class supports this.
         """
-        self.set_optimizer_param('betas', value)
+        self.del_optimizer()
+        self._betas = value
 
     @property
     def optimizer(self):
         """
         Returns: an optimizer for training the model, using the applied
-        configuration (e.g. weight_decay, momentum, learning_rate).
+        configuration (e.g. weight_decay, betas, learning_rate).
         If no optimizer exists, a new one is created using the configured
         optimizerclass (default: AdamW) and settings.
         """
         try:
             return self._optimizer
         except:
-            self.set_optimizer_param('lr', self.min_lr)
-            self._optimizer = self._optimizer_class(self.model.parameters(), **self.optimizer_params)
+            if type(self._optimizer_class) == str:
+                if self._optimizer_class.lower() == 'adam':
+                    self._optimizer_class = Adam
+                elif self._optimizer_class.lower() == 'adamw':
+                    self._optimizer_class = AdamW
+                elif self._optimizer_class.lower() == 'rmsprop':
+                    self._optimizer_class = RMSprop
+                elif self._optimizer_class.lower() == 'adadelta':
+                    self._optimizer_class = Adadelta
+                elif self._optimizer_class.lower() == 'adagrad':
+                    self._optimizer_class = Adagrad
+                elif self._optimizer_class.lower() == 'Adamax':
+                    self._optimizer_class = Adamax
+                elif self._optimizer_class.lower() == 'lbfgs':
+                    self._optimizer_class = LBFGS
+                elif self._optimizer_class.lower() == 'sgd':
+                    self._optimizer_class = SGD
+                elif self._optimizer_class.lower() == 'sparseadam':
+                    self._optimizer_class = SparseAdam
+                else:
+                    raise ValueError(f'Unsupported value {self._optimizer_class} given as optimizer.')
+            if self.weight_decay is not None:
+                if self.betas is not None:
+                    f = partial_replace_args(self._optimizer_class, weight_decay=self.weight_decay, betas=self.betas)
+                else:
+                    f = partial_replace_args(self._optimizer_class, weight_decay=self.weight_decay)
+            elif self.betas is not None:
+                f = partial_replace_args(self._optimizer_class, betas=self.betas)
+            else:
+                f = self._optimizer_class
+            self._optimizer = f(self.model.parameters(), lr=self.min_lr)
             return self._optimizer
 
     @optimizer.setter
@@ -519,51 +578,6 @@ class Trainer:
             del self._scheduler
         except: pass
 
-    @property
-    def optimizer_params(self):
-        try:
-            return self._optimizer_params
-        except:
-            self._optimizer_params = nonondict()
-            return self._optimizer_params
-    
-    @optimizer_params.setter
-    def optimizer_params(self, value):
-        """
-        Setter for the optimizer parameters used, only applies them if
-        the value is set other than None. If you want to remove all
-        params, set them to an empty dict.
-        
-        Arguments:
-            value: dict
-                conform the optimizer class that is used
-        """
-        if value is not None:
-            assert isinstance(value, dict), 'you have set optimizer_params to a dict'
-            self._optimizer_params = nonondict(value)
-        
-    @property
-    def scheduler_params(self):
-        try:
-            return self._scheduler_params
-        except:
-            self._scheduler_params = nonondict()
-            return self._scheduler_params
-    
-    @scheduler_params.setter
-    def scheduler_params(self, value):
-        """
-        Setter for the scheduler parameters used, only applies them if
-        the value is set other than None. If you want to remove all
-        params, set them to an empty dict.
-        
-        Arguments:
-            value: dict
-                conform the scheduler class/initializer that is used
-        """
-        if value is not None:
-            assert isinstance(value, dict), 'you have set scheduler_params to a dict'
-            self._scheduler_params = nonondict(value)
         
     def del_optimizer(self):
         try:
@@ -589,7 +603,7 @@ class Trainer:
         Returns: scheduler that is used to adapt the learning rate
 
         When you have set a (partial) function to initialze a scheduler, it should accepts
-        (optimizer, lr, scheduler_params) as its parameters. Otherwise, one of three standard
+        (optimizer, lr) as its parameters. Otherwise, one of three standard
         schedulers is used based on the value of the learning rate. If the learning rate is 
         - float: no scheduler is used
         - [max, min]: a linear decaying scheduler is used. 
@@ -623,16 +637,18 @@ class Trainer:
                 except: pass
                 factor = (min_lr / max_lr) ** (1 / self._scheduler_epochs)
                 self._scheduler = ConstantLR(self.optimizer, factor,
-                                  self._scheduler_epochs, **self.scheduler_params)
+                                  self._scheduler_epochs)
             elif schedulerclass == OneCycleLR:
-                scheduler_params = self.scheduler_params
                 total_steps = math.ceil(len(self.train_dl) * self.cycle)
-                self._scheduler = OneCycleLR(self.optimizer, 
-                                  self.min_lr, total_steps=total_steps, **scheduler_params) 
+                if total_steps > 1:
+                    self._scheduler = OneCycleLR(self.optimizer, 
+                                      self.max_lr, total_steps=total_steps)
+                else:
+                    self._scheduler = UniformLR(self.optimizer, self.max_lr)
             else:
                 try:
                     self._scheduler = schedulerclass(self.optimizer, 
-                                  self.lr, **self.scheduler_params)
+                                  self.lr)
                 except:
                     raise NotImplementedError(f'The provided {schedulerclass} function does not work with ({self.optimizer}, {self.lr}, {self._scheduler_epochs}, {len(self.train_dl)}) to instantiate a scheduler')
             return self._scheduler
@@ -640,19 +656,17 @@ class Trainer:
     @scheduler.setter
     def scheduler(self, value):
         """
-        Sets the schedulerclass (or function to initialize a scheduler) to use. At this moment,
-        there is no uniform way to initialize all PyTorch schedulers. 
+        Sets the schedulerclass to use. 
+        
+        At this moment, there is no uniform way to initialize all PyTorch schedulers. 
         PipeTorch provides easy support for using a scheduler through the learning rate:
         - float: no scheduler is used
         - [max, min]: a linear annealing scheduler is used. 
         - (max, min): a OneCyleLR scheduler is used.
         
-        To use another scheduler, set this to a function that accepts
-        the following parameters: (optimizer instance, learning rate, **scheduler_params)
-        
-        The scheduler_params can be supplied when calling train.
+        To use an other scheduler, set this to a (partial) function that accepts
+        the following parameters: (optimizer instance, learning rate)
         """
-        
         try:
             del self._scheduler
         except: pass
@@ -846,6 +860,10 @@ class Trainer:
         """
         raise ValueError('The Trainer was somehow not initialized with a post_forward')
 
+    @property
+    def subepochid(self):
+        return self.epochid + self.batch / len(self.train_dl)
+    
     def list_commits(self):
         """
         Returns: a list of the keys of committed (saved) models, during 
@@ -863,7 +881,11 @@ class Trainer:
                 The key to save the model under
         """        
         model_state = copy.deepcopy(self.model.state_dict())
-        optimizer_state = copy.deepcopy(self.optimizer.state_dict())
+        for key, value in model_state.items():
+            value = value.cpu()
+        optim = copy.deepcopy(self.optimizer)
+        optimizer_to(optim, torch.device('cpu'))
+        optimizer_state = optim.state_dict()
         self._commit[label] = (model_state, optimizer_state, self.subepochid, self.evaluator.results.clone())
 
     def _model_filename(self, folder=None, filename=None, extension=None):
@@ -911,7 +933,7 @@ class Trainer:
             extension: str (None)
                 the extension of the saved file, default is pyt with the pytorch version name
         """
-        self.model.load_state_dict(torch.load(self._model_filename(folder, filename, extension)))
+        self.motradel.load_state_dict(torch.load(self._model_filename(folder, filename, extension)))
         
     def to_trt(self):
         """
@@ -971,9 +993,12 @@ class Trainer:
         """
         if label in self._commit:
             model_state, optimizer_state, self.epochid, self.evaluator.results = self._commit.pop(label)
+            for key, value in model_state.items():
+                value.to(self.device)
             self.model.load_state_dict(model_state)
-            self.del_optimizer()            
+            self.del_optimizer()       
             self.optimizer.load_state_dict(optimizer_state)
+            optimizer_to(self.optimizer, self.device)
         else:
             print('commit point {label} not found')
     
@@ -989,11 +1014,13 @@ class Trainer:
         """
         if label in self._commit:
             model_state, optimizer_state, self.epochid, self.evaluator.results = self._commit[label]
-            self.evaluator.results = self.evaluator.results[self.evaluator.results.epoch <= self.epochid]
             self.epochid = math.ceil(self.epochid)            
+            for key, value in model_state.items():
+                value.to(self.device)
             self.model.load_state_dict(model_state)
             self.del_optimizer()            
             self.optimizer.load_state_dict(optimizer_state)  
+            optimizer_to(self.optimizer, self.device)
         else:
             print('commit point {label} not found')
 
@@ -1141,7 +1168,10 @@ class Trainer:
                 self.trainer.model.eval()
         return CM(self)
 
-    def validate(self, pbar=None, log={}):
+    def compute_metrics(self, y, y_pred):
+        return self.evaluator.compute_metrics(y, y_pred)
+    
+    def _validate(self, pbar=None):
         """
         Run the validation set (in evaluation mode) and store the loss and metrics into the evaluator.
         
@@ -1167,16 +1197,25 @@ class Trainer:
                 n += len(y_pred)
                 epoch_y_pred.append(to_numpy(y_pred))
                 epoch_y.append(to_numpy(y))
-                if pbar is not None:
+                if pbar is not None and pbar is not False:
                     pbar.update(self.valid_dl.batch_size)
             epochloss /= n
             epoch_y = np.concatenate(epoch_y, axis=0)
             epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
-            metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, 
-                                                    annot={'phase':'valid', 'epoch':self.subepochid}, **log)
-            self.evaluator._store_metric('loss', epochloss, 
-                                         annot={'phase':'valid', 'epoch':self.subepochid}, **log)
-        return epochloss, metrics
+        return epochloss, epoch_y, epoch_y_pred
+    
+    def _validate_store(self, epochloss, epoch_y, epoch_y_pred, log={}):
+        """
+        store the validation metrics
+        
+        returns: dict
+            evaluation metrics
+        """
+        metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, 
+                                                annot={'phase':'valid', 'epoch':self.subepochid}, **log)
+        self.evaluator._store_metric('loss', epochloss, 
+                                     annot={'phase':'valid', 'epoch':self.subepochid}, **log)
+        return metrics
 
     def test(self):
         """
@@ -1196,9 +1235,9 @@ class Trainer:
                 epoch_y.append(to_numpy(y))
             epoch_y = np.concatenate(epoch_y, axis=0)
             epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
-        return self.evaluator.compute_metrics(epoch_y, epoch_y_pred)
+        return self.compute_metrics(epoch_y, epoch_y_pred)
     
-    def _test(self, pbar=None, log={}):
+    def _test(self, pbar=None):
         """
         Run the test set (in evaluation mode) and store the loss and metrics into the evaluator.
         Is a helper function of train().
@@ -1225,16 +1264,19 @@ class Trainer:
                 n += len(y_pred)
                 epoch_y_pred.append(to_numpy(y_pred))
                 epoch_y.append(to_numpy(y))
-                if pbar is not None:
+                if pbar is not None and pbar is not False:
                     pbar.update(self.test_dl.batch_size)
             epochloss /= n
             epoch_y = np.concatenate(epoch_y, axis=0)
             epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
-            metrics = self.evaluator._store_metrics(epoch_y, epoch_y_pred, 
+        return epochloss, epoch_y, epoch_y_pred
+    
+    def _test_store(self, loss, y, y_pred, log={}):
+        metrics = self.evaluator._store_metrics(y, y_pred, 
                                                     annot={'phase':'test', 'epoch':self.epochid}, **log)
-            self.evaluator._store_metric('loss', epochloss, annot={'phase':'test', 'epoch':self.epochid}, **log)
-        return epochloss, metrics
-            
+        self.evaluator._store_metric('loss', loss, annot={'phase':'test', 'epoch':self.epochid}, **log)
+        return metrics
+    
     def train_batch(self, *X, y=None):
         """
         Train the model on a single batch X, y. The model should already
@@ -1264,7 +1306,7 @@ class Trainer:
         self._start_time = timeit.default_timer()
         return timeit.default_timer() - t
     
-    def cross_validate(self, epochs, lr, cycle=1, silent=True, test=True, earlystop=False, reset_evaluator=True, log={}):
+    def cross_validate(self, epochs, lr, cycle=1, silent=True, test=True, earlystop=False, reset_evaluator=True, log={}, debug=False, remove_outliers_sd=None, **kwargs):
         """
         Only works with a Databunch from a DFrame that is configured for n-fold cross validation. 
         The model is trained n times (reinitializing every time), and the average metric is reported 
@@ -1275,7 +1317,7 @@ class Trainer:
                 the maximum number of epochs to train. Training may be terminated early when
                 convergence requirements are met.
             lr: float, (float, float) or [float, float]
-                the learning rate to use for the optimzer. See lr for train().
+                the learning rate to use for the optimizer. See lr for train().
             cycle: int (1)
                 the number of epochs in a cycle. At the end of each cycle the validation is run.
             earlystop: int (False)
@@ -1285,30 +1327,52 @@ class Trainer:
                 run the test set every cycle (used for n-fold cross validation)
             log: {}
                 see train(log), the cross validator extends the log with a folds column.
-                
+            remove_outliers_sd: float (None)
+                for cross_validation estimations with an unstable setup (hard to converge), 
+                iteratively removes all scores for which the loss exceeds 
+                this many standeviations from the mean loss.
+            **kwargs: passed to train()
         """
         from ..data import Databunch
-        
-        data = self.databunch.iter_folds()
-        folds = self.databunch.folds
         test_dl = self.test_dl if test else None
-        pbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, test_dl, folds=folds)
-        if reset_evaluator:
-            self.reset_evaluator()
-        
-        
-        def run(trainer, trial):
-            trainer.reset_model()
-            _ = next(data)
-            log['fold'] = trial.number
-            trainer.train(epochs, lr, cycle=cycle, pbar=pbar, log=log, 
-                          test=test, silent=silent, earlystop=earlystop)
-            return trainer.optimum(select=log)
-        
-        return self.optimize(run, n_trials=folds)
+        ys = []
+        ypreds = []
+        n = []
+        losses = []
+        for i, data in tqdm(enumerate(self.databunch.iter_folds()), total=self.databunch.folds):
+            self.reset_model()
+            self.data = data
+            self.train(epochs, lr, cycle=cycle, pbar=False, log=log, 
+                          test=test, silent=silent, earlystop=earlystop, 
+                          validate=False, **kwargs)
+            ys.append(self.lowest_validtest_y)
+            ypreds.append(self.lowest_validtest_y_pred)
+            losses.append(self.lowest_validtest_loss)
+            n.append(len(self.lowest_validtest_y))
+
+        if remove_outliers_sd is not None:
+            go = True
+            while go:
+                go = False
+                mean = np.mean(losses)
+                std = np.std(losses)
+                for i in range(len(n)-1, -1, -1):
+                    if losses[i] > mean + remove_outliers_sd * std:
+                        del ys[i]
+                        del ypreds[i]
+                        del losses[i]
+                        del n[i]
+                        go = True
+
+        y = np.concatenate(ys, axis=0)
+        y_pred = np.concatenate(ypreds, axis=0)
+        metrics = self.compute_metrics(y, y_pred)
+        metrics['loss'] = sum(losses) / sum(n)
+        return pd.DataFrame([metrics])      
     
-    def optimize(self, func, n_trials=None, timeout=None, catch=(), callbacks=None, 
-                 gc_after_trial=False, show_progress_bar=False, grid=None):
+    def optimize(self, func, *target, n_trials=None, timeout=None, catch=(), callbacks=None, 
+                 gc_after_trial=True, show_progress_bar=False, 
+                 grid=None, evaluator=None, n_jobs=1):
         """
         Run n_trials on the given func to optimize settings and hyperparameters. This uses an 
         extension to the Optuna library tio create a study. This extension allows to define your
@@ -1325,22 +1389,28 @@ class Trainer:
                 when grid is not None, a grid search is performed over the given values, e.g.
                 grid={lr:[1e-3, 1e-2], batch-size=[32, 64]}
 
+            evaluator: Evaluator (None)
+                if set, this Evalauator is used for all trials, otherwise every trial
+                will obtain a new Evaluator. 
+                
             For the other arguments, see Optuna.Study.optimize
         
         Returns: Study (extension to Optuna's Study)
             That contains the collected metrics for the trials
         """
-        assert grid is None or n_trials is None, 'You cannot use Grid Search together with n_trials'
-        study = self.study(grid=grid)
+        if grid is not None and n_trials is None:
+            n_trials = np.prod( [ len(v) for v in grid.values() ])
+        study = self.study(*target, grid=grid, evaluator=evaluator)
         study.optimize(func, n_trials=n_trials, timeout=timeout, catch=catch, callbacks=callbacks,
-                      gc_after_trial=gc_after_trial, show_progress_bar=show_progress_bar)
+                      gc_after_trial=gc_after_trial, show_progress_bar=show_progress_bar, n_jobs=n_jobs)
         return study
     
     def train(self, epochs, lr=None, cycle=1, save=None, 
-              optimizer=None, optimizer_params=None, scheduler=False, 
-              scheduler_params=None, weight_decay=None, momentum=None, 
+              optimizer=None, scheduler=False, 
+              weight_decay=None, betas=None, 
               save_lowest=False, save_highest=False, silent=False, pbar=None,
-              targetloss=None, earlystop=False, log={}, test=False):
+              targetloss=None, targettrainloss=None, earlystop=False, 
+              validate=True, log={}, test=False):
         """
         Train the model for the given number of epochs. Loss and metrics
         are logged during training in an evaluator. If a model was already
@@ -1375,11 +1445,16 @@ class Trainer:
                 If not None, saves (commits) the model at the end of each cycle
                 under the name 'save'-epochnr
             
-            optimizer: PyTorch Optimizer (None)
-                If not None, changes the optimizer class to use.
+            optimizer: PyTorch Optimizer or str (None)
+                Changes the configured optimizer to a PyTorch or custom 
+                optimizer CLASS (not an instance!) that is used during training.
 
-            optimizer_params: dict (None)
-                If not None, the parameters to configure the optimizer.
+                You can either provide:
+                - an optimizer CLASS from the torch.optim module,
+                - a custom optimizer CLASS that obeys the same API, 
+                - a partial of an optimizer CLASS with optimization arguments set
+                - 'AdamW', 'Adam', 'RMSprop', 'Adadelta', 'Adagrad', 'Adamax', 
+                  'LBFGS', 'SGD', or 'SparseAdam'
 
             scheduler: None, custom scheduler class
                 used to adapt the learning rate. Set OneCycleLR or Linear Decay
@@ -1387,22 +1462,26 @@ class Trainer:
                 class/function to initialize a scheduler by accepting
                 (optimizer, learning_rate, scheduler_cycle)
 
-            scheduler_params: dict (None)
-                additional parameters that are passed when initializing the scheduler
+            weight_decay: float (None)
+                The weight_decay setting for the optimizer. When set on an
+                optimizer that does not support this, this will fail.
 
-            weight_decay: float
-                Apply weight_decay regularization with the AdamW optimizer
-
-            momentum: float
-                Apply momentum with the AdamW optimizer
+            betas: float (None)
+                The betas setting for the optimizer (mostly momentum). When set 
+                on an optimizer that does not support this, this will fail.
 
             targetloss: float (None)
                 terminates training when the validation loss drops below the targetloss.
                 
+            targettrainloss: float (None)
+                terminates training when the train loss drops below the 
+                targettrainloss.
+                
             earlystop: int (False)
                 terminates training when the validation loss has not improved for the last
-                earlystop cycles.
-                
+                earlystop cycles. The model will be reverted to the version at the lowest
+                validation loss.
+                                
             save_lowest: bool (False)
                 when the validation loss is lower than seen before, the model is 
                 saved/committed as 'lowest' and can be checked out by calling 
@@ -1420,17 +1499,17 @@ class Trainer:
             test: bool (False)
                 run the test set every cycle (used for n-fold cross validation)
         """
+        self.lowest_validloss = None
         self.cycle = cycle
         self._scheduler_start = self.epochid # used by OneCycleScheduler
         self._scheduler_epochs = epochs
-        self.scheduler_params = scheduler_params
         self.del_optimizer()
         self.lr = lr or self.lr
         if weight_decay is not None and self.weight_decay != weight_decay:
             self.weight_decay = weight_decay
-        if momentum is not None and self.momentum != momentum:
-            self.momentum = momentum
-        if optimizer and self._optimizerclass != optimizer:
+        if betas is not None and self.betas != betas:
+            self.betas = betas
+        if optimizer and self._optimizer_class != optimizer:
             self.optimizer = optimizer
         if scheduler is not False:
             self.scheduler = scheduler
@@ -1456,45 +1535,59 @@ class Trainer:
         else:
             log_batches = { len(self.train_dl)-1 }
         log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
-        for i in range(epochs):
-            with self.train_mode:
-                for batch, (*X, y) in enumerate(self.train_Xy):
-                    #print(self.cycle, len(self.train_dl), batch, log_batches, log_next_epoch, log_this_epoch)
-                    if check_scheduler and self.scheduler._step_count == self.scheduler.total_steps:
-                        self.del_scheduler()
-                        self.scheduler
-                    loss, y_pred = self.train_batch(*X, y=y)
-                    self.scheduler.step()
-                        
-                    self.currentpbar.update(self.train_dl.batch_size)
-                    #print(self.epochid, log_next_epoch, batch, log_batches)
-                    if log_next_epoch == self.epochid:
-                        y_pred = self.post_forward(y_pred)
-                        if self._debug:
-                            self.lastypfw = y_pred                          
-                        self._log_increment(loss, y, y_pred)
-                        if batch in log_batches:
-                            if batch == len(self.train_dl) - 1:
-                                batch = 0
-                                self.epochid += 1
-                                log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
-                            self.subepochid = self.epochid + batch / len(self.train_dl)
-                            validloss, validmetrics = self.validate(pbar = self.currentpbar, log=log)
-                            self._log(validloss, validmetrics, log, silent)
-                            if save_lowest is not None and save_lowest:
-                                if self.lowest_score is None or validloss < self.lowest_score:
-                                    self.lowest_score = validloss
-                                    self.commit('lowest')
-                            if test:
-                                self._test(pbar=self.currentpbar, log=log)
+        self._log_reset()
+        try:
+            for i in range(epochs):
+                with self.train_mode:
+                    for self.batch, (*X, y) in enumerate(self.train_Xy):
+                        #print(self.cycle, len(self.train_dl), batch, log_batches, log_next_epoch, log_this_epoch)
+                        if check_scheduler and self.scheduler._step_count == self.scheduler.total_steps:
+                            self.del_scheduler()
+                            self.scheduler
+                        loss, y_pred = self.train_batch(*X, y=y)
+                        self.scheduler.step()
 
-                            if save is not None and save:
-                                self.commit(f'{save}-{self.epochid}')
+                        if self.currentpbar is not None and self.currentpbar is not False:
+                            self.currentpbar.update(self.train_dl.batch_size)
+                        #print(self.epochid, log_next_epoch, batch, log_batches)
+                        if log_next_epoch == self.epochid:
+                            y_pred = self.post_forward(y_pred)
+                            if self._debug:
+                                self.lastypfw = y_pred                          
+                            self._log_increment(loss, y, y_pred)
+                            if self.batch in log_batches:
+                                if self.batch == len(self.train_dl) - 1:
+                                    self.batch = 0
+                                    self.epochid += 1
+                                    log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
+                                validloss, y, y_pred = self._validate(pbar = self.currentpbar)      
+                                if validate:
+                                    validmetrics = self._validate_store(validloss, y, y_pred, log=log)
+                                    self._log(validloss, validmetrics, log, silent)
+                                    if test:
+                                        testloss, y, y_pred = self._test(pbar=self.currentpbar)
+                                        testmetrics = self._test_store(testloss, y, y_pred, log=log)
+                                if self.lowest_validloss is None or validloss < self.lowest_validloss:
+                                    if not validate and test:
+                                            testloss, y, y_pred = self._test(pbar=self.currentpbar)
+                                    self.lowest_validloss = validloss
+                                    self.lowest_validtest_loss = testloss if test else validloss
+                                    self.lowest_validtest_y = y
+                                    self.lowest_validtest_y_pred = y_pred
+                                    if save_lowest is not None and save_lowest:
+                                        self.commit('lowest')
 
-                            if self._check_early_termination(validloss, targetloss, earlystop, silent):
-                                break
-                    elif batch == len(self.train_dl) - 1:
-                        self.epochid += 1
+                                if save is not None and save:
+                                    self.commit(f'{save}-{self.epochid}')
+
+                                if self._check_early_termination(validloss, targetloss, self._current_train_loss, targettrainloss, earlystop, silent):
+                                    self._log_reset()
+                                    raise StopIteration
+                                self._log_reset()
+                        elif self.batch == len(self.train_dl) - 1:
+                            self.epochid += 1
+        except StopIteration:
+            pass
         if pbar is None:
             try:
                 self.currentpbar.close()    
@@ -1512,13 +1605,17 @@ class Trainer:
         self._epoch_y_pred.append(to_numpy(y_pred))
         self._epoch_y.append(to_numpy(y))
         
+    @property
+    def _current_train_loss(self):
+        return self._epochloss / self._n
+        
     def _log(self, validloss, validmetrics, log, silent):
-        self._epochloss /= self._n
+        #self._epochloss /= self._n
         self._epoch_y = np.concatenate(self._epoch_y, axis=0)
         self._epoch_y_pred = np.concatenate(self._epoch_y_pred, axis=0)
         metrics = self.evaluator._store_metrics(self._epoch_y, self._epoch_y_pred, 
                                                 annot={'phase':'train', 'epoch':self.subepochid}, **log)
-        self.evaluator._store_metric('loss', self._epochloss, annot={'phase':'train', 'epoch':self.subepochid}, **log)
+        self.evaluator._store_metric('loss', self._current_train_loss, annot={'phase':'train', 'epoch':self.subepochid}, **log)
         if not silent:
             reportmetric = ''
             for m in self.metrics:
@@ -1527,31 +1624,45 @@ class Trainer:
                 try:
                     reportmetric += f'{m}={value:.5f} '
                 except: pass
-            print(f'{self.epochidstr} {self._time():.2f}s trainloss={self._epochloss:.5f} validloss={validloss:.5f} {reportmetric}')
-        self._log_reset()
-
-    def _check_early_termination(self, validloss, targetloss, earlystop, silent):
+            print(f'{self.epochidstr} {self._time():.2f}s trainloss={self._current_train_loss:.5f} validloss={validloss:.5f} {reportmetric}')
+            
+    def _check_early_termination(self, validloss, targetloss, 
+                                 trainloss, targettrainloss,
+                                 earlystop, silent):
         if targetloss is not None and validloss <= targetloss:
             try:
                 self.currentpbar.finish_fold()
             except: pass
             if not silent:
-                print('Early terminating because the validation loss reached the target.')
+                print(f'Early terminating because the validation loss {validloss} reached the target {targetloss}.')
+            return True
+        if targettrainloss is not None and trainloss <= targettrainloss:
+            try:
+                self.currentpbar.finish_fold()
+            except: pass
+            if not silent:
+                print(f'Early terminating because the train loss {trainloss} reached the target {targettrainloss}.')
             return True
         if earlystop:
             if self._lastvalidation is None:
                 self._lastvalidation = validloss
+                self.commit('earlystop')
             else:
                 if validloss < self._lastvalidation:
                     self._cyclesnotimproved = 0
+                    self.commit('earlystop')
                 else:
                     self._cyclesnotimproved += 1
-                    if self._cyclesnotimproved >= earlystop:                                
+                    if self._cyclesnotimproved >= earlystop:
+                        self.purge('earlystop')
                         try:
                             self.currentpbar.finish_fold()
                         except: pass
                         if not silent:
-                            print(f'Early terminating because the validation loss has not improved the last {earlystop} cycles.')
+                            if earlystop == 1 or earlystop == True:
+                                print(f'Early terminating because the validation loss has not improved the last cycle.')
+                            else:
+                                print(f'Early terminating because the validation loss has not improved the last {earlystop} cycles.')
                         return True
         
     def lowest(self):
@@ -1673,7 +1784,9 @@ class Trainer:
             for p in c.parameters():
                 p.requires_grad=True
 
-    def study(self, storage=None, sampler=None, pruner=None, study_name=None, direction=None, load_if_exists=False, directions=None, grid=None):
+    def study(self, *target, storage=None, sampler=None, pruner=None, 
+              study_name=None, direction=None, load_if_exists=False, 
+              directions=None, grid=None, evaluator=None):
         """
         Creates an (extended) Optuna Study to study how hyperparameters affect the given target function 
         when training a model. This call will just instantiate and return the study object. Typical use is to
@@ -1694,8 +1807,12 @@ class Trainer:
         Returns:
             Study (which is a subclass of Optuna.study.Study)
         """
-        from .study import Study
-        return Study.create_study(self, storage=storage, sampler=sampler, pruner=pruner, study_name=study_name, direction=direction, load_if_exists=load_if_exists, directions=directions, grid=grid)
+        from ..evaluate.study import Study
+        return Study.create_study(*target, trainer=self, storage=storage, 
+                                  sampler=sampler, pruner=pruner, 
+                                  study_name=study_name, direction=direction, 
+                                  load_if_exists=load_if_exists, directions=directions, 
+                                  grid=grid, evaluator=evaluator)
     
     def optimum(self, *target, direction=None, directions=None, **select):
         """
@@ -1738,24 +1855,11 @@ class Trainer:
                 directions = [ 'minimize' if t == 'loss' else 'maximize' for t in target ]
             else:
                 direction = 'minimize' if target[0] == 'loss' else 'maximize'
-        r = self.evaluator.optimum(*target, direction=direction, directions=directions, **select)
-        return [ r[t] for t in target ]
+        return self.evaluator.optimum(*target, direction=direction, directions=directions, **select)
         
     def plot_hyperparameters(self, figsize=None):
         self.tuner.plot_hyperparameters(figsize)
         
-    def tune_old(self, params,setter, lr=[1e-6, 1e-2], steps=40, smooth=0.05, label=None, **kwargs):
-        lr_values = exprange(*lr, steps)
-        if label is None:
-            label = str(setter)
-        if len(params) == 2:
-            params = range3(*params)
-        with tuner(self, lr_values, self.set_lr, smooth=0.05, label=label) as t:
-            t.run_multi(params, setter)
-
-    def tune_weight_decay_old(self, lr=[1e-6,1e-4], params=[1e-6, 1], steps=40, smooth=0.05, yscale='log', **kwargs):
-        self.tune( params, partial(self.set_optimizer_param, 'weight_decay'), lr=lr, steps=steps, smooth=smooth, label='weight decay', yscale=yscale, **kwargs)
-
     def lr_find(self, lr=[1e-6, 10], steps=40, smooth=0.05, cache_valid=True, interactive=False, **kwargs):
         """
         Run a learning rate finder on the dataset (as propesed by Leslie Smith and implemented in FastAI). 
@@ -1785,7 +1889,7 @@ class Trainer:
                 to matplotlib inline when it is done. It cannot (yet) detect the previous backend, so this
                 will only work when inline is the defaut mode.
         """
-        if interactive:
+        if intecractive:
             run_magic('matplotlib', 'notebook')
         with tuner(self, exprange(lr[0], lr[1], steps), self.set_lr, label='lr', yscale='log', smooth=smooth, cache_valid=cache_valid, **kwargs) as t:
             t.run()
