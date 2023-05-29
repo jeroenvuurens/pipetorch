@@ -65,9 +65,13 @@ class Transfer(DLModel):
             the model to transfer. This class was only tested with models from torchvision.models
             but possibly works with other models as well.
             
-        pretrained: bool (True)
+        weights: str/bool (True)
             is passed to the torchvision model function, when True the model is downloaded from
             a PyTorch repository. The torchvision models are usually trained on ImageNet.
+            In the TorchVision library, pretrained was replaced with weights. Passing
+            None will not use pretrained weights, while passing 'DEFAULT' or the name of a
+            set of pretrained weights will download these. In this Transfer model,
+            True will be replaced by 'DEFAULT' and False by None.
             
         user: bool (False)
             the downloaded model is cached in an indicated location. By default, a shared folder
@@ -76,9 +80,13 @@ class Transfer(DLModel):
             folder. In case the users are not allowed write access on the shared folder.
     """
     
-    def __init__(self, out_features=None, model=models.resnet34, pretrained=True, user=False, output_nodes=None):
+    def __init__(self, out_features=None, model=models.resnet34, weights=True, user=False, output_nodes=None):
         os.environ['TORCH_HOME'] = '~/.pipetorchuser' if user else '~/.pipetorch'
-        super().__init__(model(pretrained=pretrained))
+        if weights == True:
+            weights = 'DEFAULT'
+        elif weights == False:
+            weights = None
+        super().__init__(model(weights=weights))
         out_features = out_features or output_nodes
         if out_features is not None:
             self.replace_final(out_features)

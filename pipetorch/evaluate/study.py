@@ -32,7 +32,7 @@ class Study(optuna.study.Study):
     For more information, check out Optuna Study.
     """
     
-    def __init__(self, study, *target, trainer=None, evaluator=None, grid=None, prune_none=True):
+    def __init__(self, study, *target, grid=None, prune_none=True):
         """
         Call create_study to instantiate a study
         """
@@ -41,8 +41,6 @@ class Study(optuna.study.Study):
         for t in target:
             assert type(t) == str, 'Only str names for targets are currently supported'
         self.target = target
-        self.trainer = trainer
-        self.evaluator = evaluator
         self.grid = grid
         self._filter_sd = None
         self._filter_upper = None
@@ -50,10 +48,10 @@ class Study(optuna.study.Study):
         self._prune_none = prune_none
         
     @classmethod
-    def from_study(cls, study, trials=None):
-        r = cls.create_study(*study.target, 
-                             trainer=study.trainer,
-                             evaluator=study.evaluator,
+    def from_study(cls, study, *target, trials=None):
+        if len(target) == 0:
+            target = study.target
+        r = cls.create_study(*target, 
                              storage=study._storage, 
                              sampler=study.sampler,
                              pruner=study.pruner)
@@ -62,7 +60,7 @@ class Study(optuna.study.Study):
         return r
         
     @classmethod
-    def create_study(cls, *target, trainer=None, evaluator=None, storage=None, 
+    def create_study(cls, *target, storage=None, 
                      sampler=None, multivariate=True, pruner=None, 
                      study_name=None, direction=None, 
                      directions=None, load_if_exists=False, grid=None):
@@ -70,16 +68,16 @@ class Study(optuna.study.Study):
         Uses optuna.create_study to create a Study. This extension registers the target metrics for inspection.
         
         Arguments:
-            *target: 'loss', str, callable, Trainer or Evaluator
+            *target: 'loss', str, callable
                 When called with no targets, this is set to 'loss'
-                When called with a trainer, this is set to 'loss' + all metrics that are registered 
-                by the trainer.
-                When called with an evaluator, this is set all metrics that are registered 
-                by the evaluator.
-                Otherwise call with a sequence of callables or strings in the same order they are registered by
-                the Trainer that is used, e.g. a `Trainer(metrics='f1_score')` will have the `optimum` function return
-                `(loss, f1_score)`, therefore, register the study with `Study.create_study('loss', f1_score)`.
-                When direction is omitted, loss is set to minimize and all other directions to maximize.
+                When omitted the targets can be set by returning a dictionary of values
+                from the trial functions, and then the keys will be used.
+                When direction is omitted, a target 'loss' is set to minimize 
+                and all other directions to maximize by default.
+            directions: list['minimize'|'maximize'] (None)
+                Behavior of directions is slightly different from Optuna. When None, and a
+                list of targets is provided, directions are set to minimize for 'loss' and
+                'maximize' for other metrics. 
             sampler: optuna Sampler (None)
                 By default the multivariate TPE sampler is used. You can override this by passing an
                 instantiated Optuna Sampler.
@@ -89,57 +87,37 @@ class Study(optuna.study.Study):
                 combination once.
                 e.g. grid={'lr':[1e-2, 1e-3], 'hidden':range(100, 1000, 100)}
                 You cannot combine this with a sampler (since this used GridSampler). 
-            trainer: Trainer (None)
-                the PipeTorch Trainer this study was constructed with
-            evaluator: Evaluator (None) 
-                a PipeTorch Evaluator that will be used to store results and to
-                compute the evaluation metrics when called with optimum().
-                
-                When used with a Trainer, every trial will obtain a new Evaluator, 
-                unless an evaluator is specified here, this will reuse this evaluator.
-                
-                Otherwise, the Evaluator is coming from a DFrame.
             other arguments: check optuna
         """
-        trainer
         if grid is not None:
             assert type(grid) == dict, 'You have to pass a dict to grid'
             assert sampler is None, 'You cannot use grid together with a custom sampler'
             sampler = optuna.samplers.GridSampler(grid)
         elif sampler is None:
             sampler = optuna.samplers.TPESampler(multivariate=True)
-        if len(target) == 0:
-            if trainer is not None:
-                target = ['loss'] + [ m.__name__ for m in trainer.metrics ]
-            elif evaluator is not None:
-                target = [ m.__name__ for m in evaluator.metrics ]
-            else:
-                target = ['loss']
         if direction is None and directions is None:
             if len(target) > 1:
                 directions = [ 'minimize' if t == 'loss' else 'maximize' for t in target ]
-            else:
+            elif len(target) == 1:
                 direction = 'minimize' if target[0] == 'loss' else 'maximize'
+            else:
+                direction = 'minimize'
+        elif type(directions) == int:
+            directions = ['minimize'] + (directions - 1) * ['maximize']
         study = optuna.create_study(storage=storage, sampler=sampler, pruner=pruner,
                                     study_name=study_name, direction=direction, directions=directions, 
                                     load_if_exists=load_if_exists)
-        return cls(study, *target, trainer=trainer, evaluator=evaluator, grid=grid)
+        return cls(study, *target, grid=grid)
     
     @classmethod
     def load(cls, file):
         return joblib.load(file)
     
     def save(self, file):
-        oldtrainer = self.trainer
-        oldevaluator = self.evaluator
-        self.trainer = None
-        self.evaluator = None
         joblib.dump(self, file)
-        self.trainer = oldtrainer
-        self.evaluator = oldevaluator
 
     def __getitem__(self, slice):
-        return self.from_study(self, self.trials[slice])
+        return self.from_study(self, trials=self.trials[slice])
     
     def sample(self, n):
         """
@@ -156,7 +134,7 @@ class Study(optuna.study.Study):
         if type(n) == float:
             n = int(round(len(self.trials) * n))
         with self.quiet_mode():
-            r = self.from_study(self, random.sample(self.trials, n))
+            r = self.from_study(self, trials=random.sample(self.trials, n))
         return r
     
     def constraint(self, **kwargs):
@@ -177,38 +155,19 @@ class Study(optuna.study.Study):
         """
         r = self.results
         for p, (minx, maxx) in kwargs.items():
-            rp = r[(r.parameter == p) & (r.parametersetting >= minx) 
-                                      & (r.parametersetting <= maxx)]
-            trials = set(rp.trial.unique())
-            r = r[r.trial.isin(trials)]
+            if p in set(r.parameter.unique()):
+                rp = r[(r.parameter == p) & (r.parametersetting >= minx) 
+                                          & (r.parametersetting <= maxx)]
+                trials = set(rp.trial.unique())
+                r = r[r.trial.isin(trials)]
+            elif p in set(r.target.unique()):
+                rp = r[(r.target == p) & (r.targetvalue >= minx) 
+                                       & (r.targetvalue <= maxx)]
+                trials = set(rp.trial.unique())
+                r = r[r.trial.isin(trials)]
         trials = [ t for t in self.trials if t.number in trials ]
-        return Study.from_study(self, trials)
-    
-    def ask(self, fixed_distributions=None):
-        if not self._optimize_lock.locked():
-            if is_heartbeat_enabled(self._storage):
-                warnings.warn("Heartbeat of storage is supposed to be used with Study.optimize.")
-
-        fixed_distributions = fixed_distributions or {}
-        fixed_distributions = {
-            key: _convert_old_distribution_to_new_distribution(dist)
-            for key, dist in fixed_distributions.items()
-        }
-
-        # Sync storage once every trial.
-        if isinstance(self._storage, _CachedStorage):
-            self._storage.read_trials_from_remote_storage(self._study_id)
-
-        trial_id = self._pop_waiting_trial_id()
-        if trial_id is None:
-            trial_id = self._storage.create_new_trial(self._study_id)
-        trial = Trial(self, trial_id)
-
-        for name, param in fixed_distributions.items():
-            trial._suggest(name, param)
-
-        return trial
-
+        return Study.from_study(self, trials=trials)
+        
     def quiet_mode(self, quiet=True):
         """
         A ContextManager to silence optuna
@@ -226,19 +185,25 @@ class Study(optuna.study.Study):
         return CM()
     
     def optimize(self, func, n_trials=None, timeout=None, catch=(), callbacks=None, 
-                 gc_after_trial=True, show_progress_bar=False, n_jobs=1):
+                 gc_after_trial=True, show_progress_bar=False, n_jobs=1, loadout=()):
         """
-        See Optuna's optimize, this extensions adds passing the trainer to the trial function.
+        Args:
+            loadout: tuple ()
+                a tuple of objects that are passed to the trial function. The number
+                of positional arguments of the function must match the number of
+                values in the loadout.
+        
+        See Optuna's optimize, this extensions adds the possibility of a loadout
+        and automatically registers the target names that are returned by a trial
+        function.
         """
         
+        if self.grid is not None and n_trials is None:
+            n_trials = np.prod( [ len(v) for v in self.grid.values() ])
         args = len(inspect.getfullargspec(func)[0])
-        if args == 2:
-            if self.trainer is not None:
-                func = partial(func, self.trainer)
-            elif self.evaluator is not None:
-                func = partial(func, self.evaluator)
-            else:
-                raise NameError('You can only pass a func with two arguments when trainer/evaluator is set')
+        assert args == len(loadout) + 1, "The number of arguments of your trial function has to match the number of objects that is passed as a loadout + 1"
+        for l in loadout:
+            func = partial(func, l)
         try:
             del self._rules
         except: pass
@@ -254,6 +219,13 @@ class Study(optuna.study.Study):
 
     def add_trial(self, trial):
         if trial.state.name == 'COMPLETE':
+            if type(trial.params) == dict:
+                targets = list(trial.params.keys())
+                trial.params = list(trial.params.values())
+            if len(self.target) == 0:
+                try:
+                    self.target = targets
+                except: pass
             super().add_trial(trial)
         try:
             del self._results
@@ -289,6 +261,16 @@ class Study(optuna.study.Study):
             self._results = pd.DataFrame(table, columns=['trial', 'target', 'targetvalue'])
             return self._results
    
+    def get_target(self, target):
+        assert target in self.target, f'Target {target} is not in the studies targets'
+        i = self.target.index(target)
+        trials = []
+        for t in self.trials:
+            t = copy.copy(t)
+            t.values = [ t.values[i] ]
+            trials.append(t)
+        return Study.from_study(self, target, trials=trials)
+
     def target_direction(self, target='loss'):
         """
         Args:
@@ -429,7 +411,10 @@ class Study(optuna.study.Study):
         return dist
     
     def is_log_distribution(self, param):
-        return self.distribution(param).log
+        try:
+            return self.distribution(param).log
+        except:
+            return False
 
     def tune_r2_repeated(self, n=10, sample=0.8, **kwargs):
         results = []
@@ -584,7 +569,6 @@ class Study(optuna.study.Study):
             r = r[r.trial.isin(maxtrials)]
             result[t] = r.targetvalue.mean()
         return result
-
 
     def tune_repeated(self, n=10, sample=0.8, **kwargs):
         """
@@ -749,8 +733,8 @@ class Study(optuna.study.Study):
                 o = OptimumHuber(self, parameter, target, **modelparameters)
             elif fit=='TheilSen':
                 o = OptimumTheilSen(self, parameter, target, **modelparameters)
-            elif fit=='J':
-                o = OptimumJ(self, parameter, target, **modelparameters)
+            elif fit=='downweight':
+                o = OptimumDownweight(self, parameter, target, **modelparameters)
             else:
                 o = Optimum(self, parameter, target, **modelparameters)
             #if o.r2 > 0:
@@ -895,168 +879,6 @@ class Study(optuna.study.Study):
         x = subset.parametersetting.astype(np.float64)
         y = subset.targetvalue.astype(np.float64)
         ax.scatter(x, y, s=1)
-            
-class Trial(optuna.trial.Trial):
-    @property
-    def trainer(self):
-        """
-        A reference to the PipeTorch Trainer object this Study was instantiated through.
-        """
-        try:
-            return self._trainer
-        except:
-            self._trainer = self.study.trainer
-            self._trainer.reset_evaluator()
-            self._trainer._evaluator = self.evaluator
-            return self._trainer
-
-    @property
-    def evaluator(self):
-        """
-        A reference to the PipeTorch Evaluator object for this Study.
-        
-        This only works if the Study was instantiated through a PipeTorch
-        Trainer or DFrame.
-        """
-        try:
-            return self._evaluator
-        except:
-            if self.study.evaluator is None:
-                self._evaluator = self.trainer.evaluator
-            else:
-                self._evaluator = self.study.evaluator
-            return self._evaluator
-
-    @property
-    def df(self):
-        """
-        A reference to the PipeTorch DFrame for this Study.
-        
-        This only works if the Study was instantiated through a PipeTorch
-        Trainer or DFrame.
-        """
-        if self.trainer is not None and self.trainer.databunch is not None:
-            return self.trainer.databunch.df
-        if self.evaluator is not None:
-            return self.evaluator.df
-        raise NameError('This study was not initialized from a PipeTorch Trainer/DFrame/Evaluator')
-    
-    @property
-    def train_X(self):
-        """
-        Depending on the source, train_X as a Numpy array (when issued from a DFrame)
-        or train_X as a PyTorch Tensor (when issued from a Trainer with a Databunch).
-        """
-        if self.trainer is not None:
-            if self.trainer.databunch is not None:
-                return self.trainer.databunch.train_X
-            else:
-                raise NameError('train_X is currently only supported for Trainers with a DataBunch')
-        elif self.df:
-            return self.df.train_X
-        
-    @property
-    def valid_X(self):
-        """
-        Depending on the source, valid_X as a Numpy array (when issued from a DFrame)
-        or valid_X as a PyTorch Tensor (when issued from a Trainer with a Databunch.
-        """
-        if self.trainer is not None:
-            if self.trainer.databunch is not None:
-                return self.trainer.databunch.valid_X
-            else:
-                raise NameError('valid_X is currently only supported for Trainers with a DataBunch')
-        elif self.df:
-            return self.df.valid_X
-        
-    @property
-    def train_y(self):
-        """
-        Depending on the source, train_y as a Numpy array (when issued from a DFrame)
-        or train_y as a PyTorch Tensor (when issued from a Trainer with a Databunch.
-        """
-        if self.trainer is not None:
-            if self.trainer.databunch is not None:
-                return self.trainer.databunch.train_y
-            else:
-                raise NameError('train_y is currently only supported for Trainers with a DataBunch')
-        elif self.df:
-            return self.df.train_y
-        
-    @property
-    def valid_y(self):
-        """
-        Depending on the source, valid_y as a Numpy array (when issued from a DFrame)
-        or valid_y as a PyTorch Tensor (when issued from a Trainer with a Databunch.
-        """
-        if self.trainer is not None:
-            if self.trainer.databunch is not None:
-                return self.trainer.databunch.valid_y
-            else:
-                raise NameError('valid_y is currently only supported for Trainers with a DataBunch')
-        elif self.df:
-            return self.df.valid_y
-        
-    @property
-    def train_dl(self):
-        """
-        Dataloader for the training set, obtained from the PipeTorch Trainer.
-        """
-        try:
-            return self.trainer.train_dl
-        except:
-            raise NameError('train_dl is currently only supported by Trainers')    
-        
-    @property
-    def valid_dl(self):
-        """
-        Dataloader for the validation set, obtained from the PipeTorch Trainer.
-        """
-        try:
-            return self.trainer.valid_dl
-        except:
-            raise NameError('valid_dl is currently only supported by Trainers')    
-    
-    def optimum(self, *target, direction=None, directions=None, **select):
-        """
-        Returns the values for the given targets in this trial. This method
-        depends on proper use of the PipeTorch Evaluator to records evaluation metrics
-        during the trial. The PipeTorch Trainer will do this by default, as optimum
-        will return a 'soft optimum' by picking the epoch with the lowest validation loss.
-        Alternatively, you can access the evaluator through the trial object to add
-        score_train() and score_valid() to the results.
-        
-        Args:
-            *target: str or callable ('loss')
-                names or metric functions that are used to decide what training cycle the model was most optimal
-
-            direction: str or [ str ] (None)
-                for every target: 'minimize' or 'maximize' to find the highest or lowest value on the given target
-                If None, 'minimize' is used when optimize is 'loss', otherwise 'maximize' is used
- 
-            directions: [ str ] (None)
-                same as direction, but now a list of 'minimize' or 'maximize' for multipe targets.
-            
-            select: {} (None)
-                When None, the log={} values from the last call to train() are used. Otherwise, select
-                is a dictionary with values that distinguish the results from the current trial 
-                to the previous trails, which is needed to find the single best epoch of the current trail
-                to return the metrics for that epoch.
-                
-        Returns:
-            [ target ]
-            A list of target values 
-        """
-        if self.trainer is not None:
-            return self.trainer.optimum(*target, direction=direction, directions=directions, **select)
-        elif self.evaluator is not None:
-            return self.evaluator.optimum(*target, direction=direction, directions=directions, **select)
-    
-    def suggest_categorical(self, name, choices=None):
-        try:
-            choices = choices or self.study.grid[name]
-        except: pass
-        return super().suggest_categorical(name, choices)
 
 class Ridge:
     def __init__(self, alpha):
@@ -1311,7 +1133,7 @@ class OptimumTheilSen(Optimum):
             self._model.fit(self.train_X, self.train_y)
             return self._model
 
-class OptimumJ(Optimum):
+class OptimumDownweight(Optimum):
     def __init__(self, study, parameter, target, fold=None, degree=2, factor=1.0, window=5):
         super().__init__(study, parameter, target, fold=fold, degree=degree)
         self.factor = factor
@@ -1322,14 +1144,18 @@ class OptimumJ(Optimum):
         try:
             return self._model
         except:
-            weights = None
+            weights = np.zeros(len(self.df))
             for i in range(len(self.df)):
-                mini = max(0, i - window//2)
-                maxi = min(len(self.df), i + 1 + window // 2)
+                mini = max(0, i - self.window // 2)
+                maxi = min(len(self.df), i + 1 + self.window // 2)
                 mean = np.mean(self.df.iloc[mini:maxi].targetvalue)
                 std = np.std(self.df.iloc[mini:maxi].targetvalue)
-                y = np.clip(mean - self.df.iloc[i].targetvalue, None, 0) / std
-                weights = st.norm.cdf(y)
+                if self.direction:
+                    y = np.clip(mean - self.df.iloc[i].targetvalue, None, 0) / std
+                else:
+                    y = np.clip(self.df.iloc[i].targetvalue - mean, None, 0) / std
+                weights[i] = st.norm.cdf(y * self.factor)
+            #print(np.concatenate([weights.reshape(-1,1, self.df.targetvalue.values], axis=1))
             self._model = LinearRegression()
             self._model.fit(self.train_X, self.train_y, sample_weight=weights)
             return self._model

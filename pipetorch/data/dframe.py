@@ -64,9 +64,9 @@ class _DFrame:
                  '_pt_folds_stratify', '_pt_folds_random_state', 
                  '_pt_split_random_state', '_pt_folds_shuffle', 
                  '_pt_valid_size', '_pt_test_size', '_pt_balance', '_pt_filterna', 
-                 '_pt_train_valid_indices', '_pt_test_indices', '_pt_folds', '_pt_fold',
-                 '_cached_index' ]
-    
+                 '_pt_train_test_indices', '_pt_test_indices', '_pt_folds', '_pt_fold',
+                 '_cached_index', '_pt_folds_mode' ]
+        
     _config_fold = [ '_pt_fold' ]
     
     _cached =  [ #'_cached_changed', #'_cached_changed_fold', 
@@ -107,6 +107,21 @@ class _DFrame:
     
     def _copy_meta(self, r):
         for c in self._metadata:
+            try:
+                setattr(r, c, getattr(self, c))
+            except: pass
+        return r
+
+    def _copy_non_cached_meta(self, r):
+        for c in self._config_set:
+            try:
+                setattr(r, c, getattr(self, c))
+            except: pass
+        for c in self._config_fold_set:
+            try:
+                setattr(r, c, getattr(self, c))
+            except: pass
+        for c in self._config_indices_set:
             try:
                 setattr(r, c, getattr(self, c))
             except: pass
@@ -344,8 +359,8 @@ class _DFrame:
         
     @property
     def _indices_unshuffled(self):
-        if self._pt_train_valid_indices is not None:
-            return np.intersect1d(self.index.values, self._pt_train_valid_indices)
+        if self._pt_train_test_indices is not None:
+            return np.intersect1d(self.index.values, self._pt_train_test_indices)
         return self.index.values
 
     @property
@@ -419,7 +434,8 @@ class _DFrame:
             return self.fixed_test_indices
         if self._unchanged() and self._cached_test_indices is not None:
             return self._cached_test_indices
-        if self._pt_folds is not None and self._test_size == 1:
+        if self._pt_folds is not None and (self._pt_folds_mode == 'both' or
+                                           self._pt_folds_mode == 'test'):
             r = self._test_fold
         elif self._test_size > 0:
             if self._pt_split_stratify_test is None:
@@ -486,10 +502,7 @@ class _DFrame:
         if self._pt_folds is not None:
             r = self._valid_fold
         elif self._valid_size > 0:
-            if self._test_size < 1:
-                valid_size = self._valid_size / (1 - self._test_size)
-            else:
-                valid_size = self._valid_size
+            valid_size = self._valid_size / (1 - self._test_size)
             if valid_size > 0:
                 if self._pt_split_stratify is None:
                     if self._shuffle:
@@ -520,15 +533,15 @@ class _DFrame:
         if self._unchanged() and self._cached_folds is not None:
             return self._cached_folds
         r = []
-        if 0 < self._test_size < 1:
+        if self._test_size > 0 and self._pt_folds_mode == 'valid':
             indices = self._indices_after_testsplit
         else:
             indices = self._indices_before_testsplit
         if self._pt_folds_stratify is None:
             target = self.loc[indices]
             splitter = KFold(n_splits = self._pt_folds, shuffle=self._pt_folds_shuffle, random_state=self._pt_folds_random_state)
-            for train_indices, valid_indices in splitter.split(target, target):
-                r.append(sorted(indices[valid_indices]))
+            for train_indices, test_indices in splitter.split(target, target):
+                r.append(sorted(indices[test_indices]))
         else:
             if self._pt_folds_stratify != True and len(self._pt_folds_stratify) > 1:
                 splitter = MultilabelStratifiedKFold(n_splits = self._pt_folds,
@@ -539,35 +552,33 @@ class _DFrame:
                                     shuffle=True,
                                     random_state=self._pt_folds_random_state)
             target = self._stratifyable_columns(indices, self._pt_folds_stratify, self._pt_folds)
-            for train_indices, valid_indices in splitter.split(target, target):
-                r.append(sorted(indices[valid_indices]))
+            for train_indices, test_indices in splitter.split(target, target):
+                r.append(sorted(indices[test_indices]))
         self._change('_cached_folds', r)
         return r
-    
+        
     @property
-    def _fold(self):
+    def _valid_fold(self):
         """
-        The current valid fold number, set by df.fold(i)
+        the current test fold, determined by df.fold(i) + 1
         """
-        try:
-            return self._pt_fold + 0
-        except:
-            return 0
+        assert self._pt_fold is not None, 'Apply folds() first'
+        assert self._pt_folds_mode == 'both' or self._pt_folds_mode == 'valid', 'There is no valid fold'
+        if self._pt_folds_mode == 'both':
+            valid_fold = (self._pt_fold + 1 + (self._pt_fold // self._pt_folds % (self._pt_folds - 1))) % self._pt_folds
+        else:
+            valid_fold = self._pt_fold
+        return self._folds[valid_fold]
     
     @property
     def _test_fold(self):
         """
-        the current test fold, determined by df.fold(i) + 1
-        """
-        test_fold = (self._fold + 1 + (self._fold // self._pt_folds % (self._pt_folds - 1))) % self._pt_folds
-        return self._folds[test_fold]
-    
-    @property
-    def _valid_fold(self):
-        """
         The current valid fold, determined by df.fold(i)
         """
-        return self._folds[self._fold]
+        assert self._pt_fold is not None, 'Apply folds() first'
+        if self._pt_folds_mode == 'valid':
+            return self._test_indices
+        return self._folds[self._pt_fold]
     
     def fold(self, i):
         """
@@ -620,10 +631,10 @@ class _DFrame:
         
     def to_datasets(self, datasetclass=None):
         """
-        Prepares the train, valid and (optionally) test subsets as a DSet, which can be used to complete 
+        Prepares the train, test and valid subsets as a DSet, which can be used to complete 
         the data preparation.
         
-        A first call will trigger rows to be assigned to the train, valid and test part, which are stored
+        A first call will trigger rows to be assigned to the train, test and valid part, which are stored
         in place to reproduce the exact same split for consecutive calls.
 
         Arguments:
@@ -633,10 +644,14 @@ class _DFrame:
         Returns: list(DataSet)
         """
         res = [ self.train.to_dataset(datasetclass) ]
-        if len(self._valid_indices) > 0:
-            res.append(self.valid.to_dataset(datasetclass))
         if len(self._test_indices) > 0:
             res.append(self.test.to_dataset(datasetclass))
+        else:
+            res.append(None)
+        if len(self._valid_indices) > 0:
+            res.append(self.valid.to_dataset(datasetclass))
+        else:
+            res.append(None)
         return res
         
     def df_to_dset(self, df):
@@ -650,24 +665,53 @@ class _DFrame:
         """
         return self._dset(df)
         
-    def to_databunch(self, datasetclass=None, batch_size=32, valid_batch_size=None, 
-                     num_workers=0, shuffle=True, pin_memory=False, balance=False, 
-                     collate=None):
+    def to_databunch(self, datasetclass=None, batch_size=32, test_batch_size=None, 
+                     num_workers=0, shuffle=True, pin_memory=False, collate=None, balance=None):
         """
-        Prepare the data as a Databunch that contains dataloaders for the train, valid and test part.
+        Prepare the data as a Databunch that contains dataloaders for the train, test and valid part.
         
         batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor.
         
-        A first call will trigger rows to be assigned to the train, valid and test part, which are stored
-        in place to reproduce the exact same split for consecutive calls.
+        A first call will trigger rows to be assigned to the train, test, and valid part, which are stored
+        in place to reproduce the exact same split for consecutive calls. 
+        
+        If the DFrame was only split in a train/test part, the test part is also used for validation. This
+        is done because training Neural Networks always requires a validation set.
 
         Returns: Databunch
         """
-        return Databunch(self, *self.to_datasets(datasetclass=datasetclass), 
-                         batch_size=batch_size, valid_batch_size=valid_batch_size, 
+        train, test, valid = self.to_datasets(datasetclass=datasetclass)
+        if valid is None:
+            valid = test
+        return Databunch(self, train, test, valid, 
+                         batch_size=batch_size, test_batch_size=test_batch_size, 
                          num_workers=num_workers, shuffle=shuffle, 
-                         pin_memory=pin_memory, balance=balance, collate=collate)    
+                         pin_memory=pin_memory, collate=collate, balance=balance)    
 
+    def to_dataloaders(self, datasetclass=None, batch_size=32, test_batch_size=None, 
+                     num_workers=0, shuffle=True, pin_memory=False, collate=None, balance=None):
+        """
+        Prepare the data as a Databunch that contains dataloaders for the train, test and valid part.
+        
+        batch_size, num_workers, shuffle, pin_memory: see Databunch/Dataloader constructor.
+        
+        A first call will trigger rows to be assigned to the train, test, and valid part, which are stored
+        in place to reproduce the exact same split for consecutive calls. 
+        
+        If the DFrame was only split in a train/test part, the test part is also used for validation. This
+        is done because training Neural Networks always requires a validation set.
+
+        Returns: (DataLoader, DataLoader, DataLoader) 
+            Two or three torch.utils.data.DataLoader objects for the train, test and 
+            validation sets. These DataLoaders can be used by a PyTorch trainer to
+            train, validate and evaluate the model.
+        """
+        db = self.to_databunch(datasetclass=datasetclass, batch_size=batch_size, 
+                               test_batch_size=test_batch_size, num_workers=num_workers, 
+                               shuffle=shuffle, pin_memory=pin_memory, 
+                               collate=collate, balance=balance)
+        return db.train_dl, db.test_dl, db.valid_dl
+    
     def _evaluator(self, *metrics):
         """
         Creates a PipeTorch Evaluator, that can be used to visualize the data, the results
@@ -823,6 +867,21 @@ class _DFrame:
         if len(y.shape) == 1:
             y = y.reshape(-1,1)
         df = pd.DataFrame(self._inverse_scale(to_numpy(y), self._scalery, self._columny))
+        return df
+    
+    def inverse_y(self, y):
+        """
+        Invert the transformation an output y vector, both scaling and categories.
+        
+        Arguments:
+        y: Numpy array or PyTorch tensor
+            with the output that where preprocessed by this DFrame or predicted by the model
+        
+        Return: Pandas DataFrame
+            That is reconstructed from Numpy arrays/Pytorch tensors
+            that are transformed back to the original scale and/or categorylabels. 
+        """
+        df = self.inverse_scale_y(y)
         if self._categoryy() is not None:
             for c, cat in zip(self._columny, self._categoryy()):
                 if cat is not None:
@@ -1028,7 +1087,7 @@ class _DFrame:
         for p in self._cached:
             setattr(self, p, None)
         self._cached_index = self.index.copy()
-
+        
     def _columns_changed(self):
         for p in self._cached:
             setattr(self, p, None)
@@ -1048,25 +1107,25 @@ class _DFrame:
         return r
         
     def split(self, 
-              valid_size=None, 
               test_size=None, 
+              valid_size=None, 
               shuffle=None, 
               random_state=None, 
               stratify=None, 
               stratify_test=None):
         """
-        Split the data in a train/valid/(test) set. 
+        Split the data in a train/valid/(test) set. Any existing split is reset.
         
         This effect is not inplace, but applied to a copy that is returned. 
         
         Arguments:
-            valid_size: float (None)
-                the fraction of the dataset that is used for the validation set.
-                
             test_size: float (None)
                 the fraction of the dataset that is used for the test set. When combined with folds
                 if 1 > test_size > 0, the test set is split before the remainder is divided in folds 
                 to apply n-fold cross validation.
+                
+            valid_size: float (None)
+                the fraction of the dataset that is used for the validation set.
                 
             shuffle: bool (None)
                 shuffle the rows before splitting. None means True unless sequence() is called to process
@@ -1096,9 +1155,22 @@ class _DFrame:
         r._change('_pt_split_stratify', [stratify] if type(stratify) == str else stratify)
         r._change('_pt_split_stratify_test', [stratify_test] if type(stratify_test) == str else \
                                     (r._pt_split_stratify if stratify_test is None else stratify_test))
+        r._index_changed()
+        return r
+
+    def fixtest(self):
+        """
+        Returns a copy of this DFrame in which the test set is split and fixed, so that
+        any consecutive splits and folds are only applied to the train/valid set.
+        """
+        t = self.copy(deep=False)
+        r = t.from_train_test(self.train, self.test)
+        t._copy_non_cached_meta(r)
+        r._pt_test_size = None
+        r._pt_split_stratify_test = None
         return r
     
-    def folds(self, folds=5, shuffle=True, random_state=None, stratify=None, test=None):
+    def folds(self, folds=5, shuffle=True, random_state=None, stratify=None, mode='both'):
         """
         Divide the data in folds to setup n-Fold Cross Validation in a reproducible manner. 
         
@@ -1132,23 +1204,32 @@ class _DFrame:
                 Per value for the given column, the rows are sampled. When a list
                 of columns is given, multi-label stratification is applied.
                 
-            test: bool (None)
-                whether to use one fold as a test set. The default None is interpreted as True when
-                split is not used. Often for automated n-fold cross validation studies, the validation set
-                is used for early termination, and therefore you should use an out-of-sample
-                test set that was not used for optimizing.
+            mode: ['both', 'test'] (both)
+                when set to 'both', on every split one fold is used for validation, 
+                one fold for testing and the remainder for training.
+                when set to 'both' with a fixed test set, one fold is used for validation,
+                and the remainder for traing ( and the fixed test set is kept separate )
+                when set to 'test' one fold is used for testing.
             
         Returns: copy of DFrame 
             schedules the data to be split in folds.
         """
         assert type(folds) == int and folds > 1, 'You have to set split(folds) to an integer > 1'
+        assert mode == 'both' or mode == 'test', 'mode has to be both or test'
+        assert mode == 'both' or len(self.fixed_test_indices) == 0, 'It does not make sense to use mode=test with a fixed testset'
         r = self.copy(deep=False)
         r._change('_pt_folds', folds)
         r._change('_pt_folds_shuffle', shuffle)
         r._change('_pt_folds_random_state', random_state)
         r._change('_pt_folds_stratify', [stratify] if type(stratify) == str else stratify)
-        if test or (r._pt_test_size is None and test is None):
-            r._change('_pt_test_size', 1)
+        r._pt_fold = 0
+        if mode == 'both':
+            if len(self.fixed_test_indices) > 0:
+                r._change('_pt_folds_mode', 'valid')
+            else:
+                r._change('_pt_folds_mode', 'both')
+        else:
+            r._change('_pt_folds_mode', 'test')
         return r
     
     def leave_one_out(self):
@@ -1185,7 +1266,7 @@ class _DFrame:
         Returns: copy of DFrame
         """
         r = self.copy(deep=False)
-        r._change('_pt_columny', [self._pt_columnx[0]])
+        r._change('_pt_columny', [self._columnx[0]])
         return r
     
     def columny(self, columns=None, vector=None):
@@ -1526,55 +1607,6 @@ class _DFrame:
         df["Values"] = value_col
         return df
 
-    def cross_validate_sklearn(self, model, *target, evaluator=None, annot={}, **kwargs):
-        """
-        On a DFrame that is configured for n-fold cross validation (df.folds(n)), this function iterates
-        over the trials, fitting an SKLearn model and storing the targets for the train, valid and test subsets.
-        
-        Arguments:
-            model: object
-                a machine learning algorithm that support the fit(X, y) and predict(X) methods,
-                like the SKLearn models.
-            target: callable
-                one or more functions that return an evaluation metrics when called with
-                target(y_true, y_predict)
-            evaluator: Evaluator (None)
-                when provided, the results are added to this evaluator, otherwise
-                the evaluator of this DFrame is reset and a new one is used.
-            annot: {}
-                the annotations that are stored with the metrics. cross_validate will add a
-                'fold' metric to indicate the fold.
-                
-        """
-        assert self._pt_folds is not None, 'You have to set df.folds before you can use cross validate'
-        assert self._pt_folds > 1, 'You have to set df.folds greater than 1 before you can use cross validate'
-        if reset_evaluator:
-            try:
-                del self._pt_evaluator
-            except: pass
-        evaluator = self.evaluator(*target)
-        study = evaluator.study(**kwargs)
-        data = self.iterfolds()
-        folds = self._pt_folds
-        test = len(self._test_indices) > 0
-                
-        def run(evaluator, trial):
-            df = next(data)
-            annot['fold'] = trial.number
-            model.fit(df.train_X, df.train_y)
-            evaluator._store_metrics(df.train_y, model.predict(df.train_X), 
-                                          annot={'phase':'train', **annot})
-            metrics = evaluator._store_metrics(df.valid_y, model.predict(df.valid_X), 
-                                                    annot={'phase':'valid', **annot})
-            if test:
-                metrics = evaluator._store_metrics(df.test_y, model.predict(df.test_X), 
-                                              annot={'phase':'test', **annot})
-            
-            return [ metrics[t] for t in study.target ]
-        
-        study.optimize(run, n_trials=folds)
-        return study
-
     def study(self, *target, evaluator=None, **kwargs):
         """
         On a DFrame that is configured for n-fold cross validation (df.folds(n)), this function iterates
@@ -1723,7 +1755,7 @@ class DFrame(pd.DataFrame, _DFrame):
     @classmethod
     def from_train_test(cls, train, test, **kwargs):
         r = cls(pd.concat([train, test], ignore_index=True))
-        r._pt_train_valid_indices = list(range(len(train)))
+        r._pt_train_test_indices = list(range(len(train)))
         r._pt_test_indices = list(range(len(train), len(train)+len(test)))
         return r
     

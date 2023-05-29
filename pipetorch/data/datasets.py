@@ -108,7 +108,7 @@ def occupancy():
 def ag_news(language='basic_english', min_freq=1, collate='pad'):
     from torchtext.datasets import AG_NEWS
     train_iter, test_iter = read_torchtext(AG_NEWS)
-    tc = TextCollection.from_iter(train_iter, None, test_iter, min_freq=min_freq).collate(collate)
+    tc = TextCollection.from_iter(train_iter, test_iter, None, min_freq=min_freq).collate(collate)
     return tc
 
 def bbc_news(language='basic_english', min_freq=1, collate='pad'):

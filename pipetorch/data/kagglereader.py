@@ -44,6 +44,12 @@ class Kaggle:
             try:
                 from kaggle.api.kaggle_api_extended import KaggleApi
                 self._api = KaggleApi()
+            except:
+                raise ValueError('''
+                the Kaggle library is not installed, install with (for example)
+                conda install -c conda-forge kaggle
+                ''')
+            try:
                 self._api.authenticate()
                 return self._api
             except:

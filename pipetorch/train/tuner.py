@@ -63,7 +63,7 @@ class tuner:
         if cache_valid:
             for batch in self.trainer.valid_Xy:
                 validation_set.append(batch)
-                mem_validation += sum([sys.getsizeof(x.storage()) for x in batch])
+                mem_validation += sum([x.nelement() * x.element_size() for x in batch])
                 #print(mem_validation)
                 if self.max_validation_mem and mem_validation > self.max_validation_mem:
                     print('warning: validation set is too large for memory')

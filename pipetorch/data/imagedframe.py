@@ -44,7 +44,7 @@ def _show_batch(ds, rows=3, imgsize=(20,20), figsize=(10,10), classes=None, norm
 
     for i, ax in enumerate(axs):
         img, y = ds[random.randrange(0, len(ds))]
-        img = transforms.Resize([100,100])(img)
+        img = transforms.Resize([100,100], antialias=True)(img)
         img = inv_normalizer(img)
         try:
             img = transforms.ToTensor()(img)
@@ -65,7 +65,7 @@ def _show_batch(ds, rows=3, imgsize=(20,20), figsize=(10,10), classes=None, norm
         try:
             y = classes[int(y)]
         except:
-            raise
+            pass
         ax.set_title(f'y={y}')
     for ax in axs.flatten()[i:]:
         ax.axis('off')
@@ -73,18 +73,18 @@ def _show_batch(ds, rows=3, imgsize=(20,20), figsize=(10,10), classes=None, norm
     plt.show()
 
 class ImageDatabunch(Databunch):
-    def __init__(self, train_ds, valid_ds=None, test_ds=None, batch_size=32, 
-                 valid_batch_size=None, num_workers=2, shuffle=True, pin_memory=False, 
-                 balance=False, collate=None, 
-                 normalized_mean=None, normalized_std=None, classes=None):
-        if valid_batch_size is None:
-            valid_batch_size = batch_size
+    def __init__(self, train_ds, test_ds=None, valid_ds=None, batch_size=32, 
+                 test_batch_size=None, num_workers=2, shuffle=True, pin_memory=False, 
+                 collate=None, balance=None, normalized_mean=None, normalized_std=None, classes=None):
+        if test_batch_size is None:
+            test_batch_size = batch_size
         try:
             self.classes = classes or train_ds.classes
         except:
             try:
                 self.classes = classes or train_ds.dataset.classes
-            except: pass
+            except:
+                self.classes = None
         try:
             self.normalized_mean = normalized_mean or train_ds.normalized_mean
             self.normalized_std = normalized_std or train_ds.normalized_std
@@ -93,27 +93,28 @@ class ImageDatabunch(Databunch):
                 self.normalized_mean = normalized_mean or train_ds.dataset.normalized_mean
                 self.normalized_std = normalized_std or train_ds.dataset.normalized_std
             except: pass
-        super().__init__(None, train_ds, valid_ds=valid_ds, test_ds=test_ds, batch_size=batch_size, 
-                         valid_batch_size=valid_batch_size, num_workers=num_workers, shuffle=shuffle, 
-                         pin_memory=pin_memory, balance=balance, collate=collate)
+        super().__init__(None, train_ds, test_ds=test_ds, valid_ds=valid_ds, batch_size=batch_size, 
+                         test_batch_size=test_batch_size, num_workers=num_workers, shuffle=shuffle, 
+                         pin_memory=pin_memory, collate=collate, balance=balance)
 
     @classmethod
-    def from_train_test_ds(cls, train_valid_ds, test_ds, valid_perc=0.2, 
-                           batch_size=32, valid_batch_size=None, 
-                           num_workers=2, shuffle=True, pin_memory=False, balance=False, collate=None,
+    def from_train_test_ds(cls, train_ds, test_ds, valid_perc=0.2, 
+                           batch_size=32, test_batch_size=None, 
+                           num_workers=2, shuffle=True, pin_memory=False, collate=None,
+                           balance=None,
                            classes=None, normalized_mean=None, normalized_std=None):
-        valid_length = int(valid_perc * len(train_valid_ds))
-        train_length = len(train_valid_ds) - valid_length
+        valid_length = int(valid_perc * len(train_ds))
+        train_length = len(train_ds) - valid_length
         if shuffle:
-            train_ds, valid_ds = random_split(train_valid_ds, [train_length, valid_length])
+            train_ds, valid_ds = random_split(train_ds, [train_length, valid_length])
         else:
-            train_ds = train_valid_ds[train_length]
-            valid_ds = train_valid_ds[valid_length]
-        return cls(train_ds, valid_ds, test_ds, batch_size=batch_size, 
-                   valid_batch_size=valid_batch_size, num_workers=num_workers, shuffle=shuffle, 
-                   pin_memory=pin_memory, balance=balance, collate=collate, classes=classes,
+            train_ds = train_ds[:train_length]
+            valid_ds = train_ds[train_length:]
+        return cls(train_ds, test_ds, valid_ds, batch_size=batch_size, 
+                   test_batch_size=test_batch_size, num_workers=num_workers, shuffle=shuffle, 
+                   pin_memory=pin_memory, collate=collate, balance=balance, classes=classes,
                    normalized_mean=normalized_mean, normalized_std=normalized_std)
-        
+              
     def show_batch(self, rows=3, imgsize=(20,20), figsize=(10,10)):
         try:
             _show_batch( self.train_ds, rows=rows, imgsize=imgsize, figsize=figsize, classes=self.classes,
@@ -139,7 +140,7 @@ class ImageDFrame(DFrame):
         self._pt_classes = classes
         
     @classmethod
-    def read_from_kaggle(cls, dataset, filename=None, shared=False, force=False, **kwargs):
+    def read_from_kaggle(cls, dataset, filename=None, shared=True, force=False, **kwargs):
         k = Kaggle(dataset, shared=shared)
         if force:
             k.remove_user()
@@ -150,11 +151,14 @@ class ImageDFrame(DFrame):
         else:
             return cls.from_image_files(folder, **kwargs)
 
-    def to_databunch(self, datasetclass=None, batch_size=32, valid_batch_size=None, 
-                     num_workers=0, shuffle=True, pin_memory=False, 
-                     balance=False, collate=None):
-        return ImageDatabunch(*self.to_datasets(datasetclass=datasetclass), 
-                         batch_size=batch_size, valid_batch_size=valid_batch_size,
+    def to_databunch(self, datasetclass=None, batch_size=32, test_batch_size=None, 
+                     num_workers=2, shuffle=True, pin_memory=False, 
+                     balance=None, collate=None):
+        train, test, valid = self.to_datasets(datasetclass=datasetclass)
+        if valid is None:
+            valid = test
+        return ImageDatabunch(train, test, valid, 
+                         batch_size=batch_size, test_batch_size=test_batch_size,
                          num_workers=num_workers, shuffle=shuffle, 
                          pin_memory=pin_memory, balance=balance, collate=collate, classes=self.classes,
                          normalized_mean=self.normalized_mean, normalized_std=self.normalized_std)  
@@ -311,12 +315,29 @@ class ImageDFrame(DFrame):
         return r
 
     @classmethod
-    def from_image_files(cls, folder, ext=None, omit=None, delimiter='.'):
+    def from_image_files(cls, folder, ext=None, omit=None, delimiter='.', targetindex=0):
         """
         Construct an ImageDFrame from a folder with files in which the
-        first part of the filename indicates the class label, e.g. horse.1.jpg,
+        part of the filename indicates the class label, e.g. horse.1.jpg,
         cow.2.jpg.
         
+        The label is found using the delimiter and targetindex. In the given example
+        a delimiter='.' and targetindex=0 would use 'horse' and 'cow' as labels and
+        targetindex=-2 would use 1 and 2. 
+        
+        Three different target labels are supported: numeric, text and None: 
+            targetindex=None indicates there is no target label and the filename
+            is also used as the targetlabel.
+
+            Otherwise, an attempt is made to convert the label into a float32, 
+            since this is commonly used for PyTorch. If that succeeds
+            a numeric label is used. 
+
+            If float conversion fails, a categorical label is assumed and 
+            DFrame.categoryy() is set accordingly, meaning that the DataFrame will show
+            a String label, but during data preparation the target values are converted 
+            into unique numbers.
+
         Args:
             folder: str or Path
                 folder containing the files
@@ -328,6 +349,12 @@ class ImageDFrame(DFrame):
                 delimiter used to obtain the class label from the filename.
                 By default a '.' is used, in which case horse.1.jpg will use the
                 name 'horse' as its class label.
+            targetindex: int/None (0)
+                To obtain the target, the filenames are split by the given delimiter
+                and then targetindex indicates the position of the targetlabel, 
+                e.g. -2 for 'horse.1.jpg' will use '1', -1 would use 'jpg' and
+                0 would use 'horse'. 
+                
         """
         if type(folder) == str:
             folder = Path(folder)
@@ -338,13 +365,26 @@ class ImageDFrame(DFrame):
         if omit is not None:
             for o in omit:
                 files = [ f for f in files if not f.endswith(o) ]
-        classes = [ ('/' + str(f)).split('/')[-1] for f in files ]
-        classes = [ c.split(delimiter)[0] for c in classes ]
-        uniqueclasses = list(set(classes))
-        str2class = { c:i for i, c in enumerate(uniqueclasses) }
-        classes = [ str2class[c] for c in classes ]
-        files = [ (str(f), c) for f, c in zip(files, classes) ]
-        r = ImageDFrame(files, columns=['filename', 'target'], classes=uniqueclasses)
-        r.target = r.target.astype(np.int64)
+        files = [ f for f in files if '/.' not in str(f) ]
+        if targetindex is None:
+            files = [ (str(f), str(f)) for f in files ]
+            return ImageDFrame(files, columns=['filename', 'target'])
+        
+        target = [ ('/' + str(f)).split('/')[-1] for f in files ]
+        target = [ t.split(delimiter)[targetindex] for t in target ]
+        try:
+            target = [ float(t) for t in target ]
+            converted_to_float = True
+        except:
+            converted_to_float = False
+        files = [ (str(f), t) for f, t in zip(files, target) ]
+        r = ImageDFrame(files, columns=['filename', 'target'])
+        if converted_to_float:
+            if r.target.min() == 0.0 and r.target.max() == 1.0:
+                r.target = r.target.astype(np.float32)
+            else:
+                r.target = r.target.astype(np.int64)
+        else:
+            r = r.categoryy()
         return r
 

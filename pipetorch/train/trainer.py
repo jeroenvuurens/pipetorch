@@ -51,6 +51,19 @@ class ordered_dl:
         if exc_type is not None:
             return False
 
+class silencetrainer:
+    def __init__(self, trainer, silent=True):
+        self.trainer = trainer
+        self.old_silent = trainer.silent
+        self.new_silent = silent
+
+    def __enter__(self):
+        self.trainer.silent = self.new_silent
+        return self.trainer
+
+    def __exit__(self, exc_type, exc_value, tb):
+        self.trainer.silent = self.old_silent
+
 def argmax(y):
     return torch.argmax(y, dim=1)
 
@@ -81,13 +94,29 @@ class Trainer:
         loss: callable
             a PyTorch or custom loss function
             
-        data: databunch or a list of iterables (DataLoaders)
+        *databunch: databunch or a list of iterables (DataLoaders)
             a databunch is an object that has a train_dl, valid_dl,
-            and optionally test_dl property.
-            otherwise, a list of iterables can also be given. 
-            Most often, these iterables are PyTorch DataLoaders that 
-            are used to iterate over the respective datasets
-            for training and validation.
+            and optionally test_dl property. Databunches can be generated
+            by DFrame with to_databunch, but you may also pass your own
+            object that has at least a train_dl and valid_dl property.
+            
+            Alternatively, a list of iterables can also be given in the
+            order train, test, (valid). When only two dataloaders are provided
+            the second will be used both as valid and test. Most often, 
+            these iterables are PyTorch DataLoaders that are used to iterate 
+            over the datasets for training and validation.
+            
+        train_dl: iterable (DataLoader)
+            when databunch is not used, you can use the named argument to
+            assign an iterable or DataLoader used for training
+            
+        test_dl: iterable (DataLoader)
+            when databunch is not used, you can use the named argument to
+            assign an iterable or DataLoader used for testing
+            
+        valid_dl: iterable (DataLoader)
+            when databunch is not used, you can use the named argument to
+            assign an iterable or DataLoader used for validation
             
         metrics: callable or list of callable
             One or more functions that can be called with (y, y_pred)
@@ -170,6 +199,9 @@ class Trainer:
             If no post_forward is found, and the loss function is unknown, then None is used
             and a warning is printed. Pass post_forward=False to suppress this warning.
             
+        silent: bool (False)
+            Whether this trainer will print messages
+            
         debug: bool (False)
             stores X, y and y_pred in properties so that they can be inspected
             when an error is thrown.
@@ -177,7 +209,10 @@ class Trainer:
     def __init__(self, 
                  model, 
                  loss, 
-                 *data, 
+                 *databunch,
+                 train_dl=None,
+                 test_dl=None,
+                 valid_dl=None,
                  metrics = [], 
                  optimizer='AdamW', 
                  scheduler=None, 
@@ -187,16 +222,30 @@ class Trainer:
                  random_state=None, 
                  evaluator=None, 
                  debug=False,
+                 silent=False,
                  post_forward=None):
         
         # the amount of epochs in a cycle, 
         # validation is only done at the end of each cycle
         self.loss = loss
         self.random_state = random_state
+        self._gpu = False
         self.gpu(gpu)
-        self.data = data
+        if len(databunch) > 0:
+            assert train_dl is None, 'Positional arguments after the loss function are considered as a databunch, you cannot use that with the named argument train_dl'
+            assert test_dl is None, 'Positional arguments after the loss function are considered as a databunch, you cannot use that with the named argument test_dl'
+            assert valid_dl is None, 'Positional arguments after the loss function are considered as a databunch, you cannot use that with the named argument valid_dl'            
+            self.data = databunch
+        else:
+            assert train_dl is not None, 'You must specify train_dl'
+            assert valid_dl is not None, 'You must specify valid_dl'
+            if test_dl is None:
+                self.data = (train_dl, valid_dl)
+            else:
+                self.data = (train_dl, valid_dl, test_dl)
         self._model = model
         self._debug = debug
+        self.silent = silent
         self._set_post_forward(post_forward, model, loss)
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -218,7 +267,7 @@ class Trainer:
             self.metrics = evaluator.metrics
         else:
             self.metrics = metrics
-
+            
     def copy(self):
         if self.databunch is not None:
             data = [ self.databunch ]
@@ -271,7 +320,7 @@ class Trainer:
                 data[0].valid_dl
                 self.databunch = data[0]
             except:
-                raise TypeError('Single datasources must have train_dl and valid_dl properties, like a Databunch')
+                raise TypeError('A valid "databunch" must have train_dl and valid_dl properties, like a Databunch')
         elif len(data) < 4:
             try:
                 _ = iter(data[0])
@@ -289,6 +338,8 @@ class Trainer:
                     self.test_dl = data[2]
                 except TypeError:
                     raise TypeError('The third data source must be iterable, preferably a DataLoader that provide an X and y')
+            else:
+                self.test_dl = data[1]
         else:
             raise TypeError('You must specify a data source. Either a databunch or a set of max. 3 dataloaders')
 
@@ -311,7 +362,8 @@ class Trainer:
                             self.post_forward = func
                         return
                 except: pass
-        print('Warning, assuming no post_forward is needed (unknown loss function). Pass post_forward=False to suppress this warning.')
+        if not self.silent:
+            print('Warning, assuming no post_forward is needed (unknown loss function). Pass post_forward=False to suppress this warning.')
                     
     def reset_evaluator(self):
         try:
@@ -332,50 +384,67 @@ class Trainer:
             
     def __repr__(self):
         return 'Trainer( ' + repr(self.model) + ')'
-
-    def to(self, device):
-        """
-        Configures the device to train on
-        
-        Arguments:
-            device: bool, int or torch.device
-                The device to train on:
-                    False or -1: cpu
-                    True: cuda:0, this is probably what you want to train on gpu
-                    int: cuda:gpu
-                Setting the device will automatically move the model and data to
-                the given device. Note that the model is not automatically
-                transfered back to cpu afterwards.
-        """
-        if device is True or (type(device) == int and device == 0):
-            device = torch.device('cuda:0')
-        elif device is False or (type(device) == int and device == -1):
-            device = torch.device('cpu')
-        elif type(device) == int:
-            assert device < torch.cuda.device_count(), 'Cannot use gpu {device}, note that if a gpu has already been selected it is always renumbered to 0'
-            device = torch.device(f'cuda:{device}')
-        try:
-            if device != self.device:
-                self.device = device
-                try:
-                    del self._optimizer
-                except: pass
-        except:
-            self.device = device
-        self._gpu = self.device == 'cuda'
-
+       
     def cpu(self):
         """
         Configure the trainer to train on cpu
         """
-        self.to(False)
+        if self._gpu is not False:
+            self._gpu = False
+            try:
+                del self._device
+            except: pass
 
-    def gpu(self, gpu=True):
+    @property
+    def device(self):
+        try:
+            return self._device
+        except:
+            if self._gpu is False:
+                if not self.silent:
+                    print('Working on cpu, note that when training a big network you should train on GPU if available.')
+                self._device = torch.device('cpu')
+            elif type(self._gpu) == int:
+                assert self._gpu < torch.cuda.device_count(), f'You must choose a number of an existing GPU, {self._gpu} is too high. Use !nvidia-smi to inspect which GPU\'s there are and what theri current load is.'
+                if not self.silent:
+                    print(f'Manually selected cuda:{self._gpu}. When training is slower than expected, consider switching GPU.')
+                self._device = torch.device(f'cuda:{self._gpu}')
+            else:
+                try:
+                    import GPUtil
+                except:
+                    assert False, 'You must install GPUtil to use gpu=True'
+                try:
+                    d = GPUtil.getAvailable(order = 'memory', limit = 1, maxLoad = 0.7, maxMemory = 0.8, includeNan=False, excludeID=[], excludeUUID=[])
+                    d = None if len(d) == 0 else d[0]
+                    if d is None:
+                        if not self.silent:
+                            print('All gpu\'s are busy, space must be freed-up by closing notebooks. Using CPU.')
+                        self._device = torch.device('cpu')
+                    else:
+                        self._device = torch.device(f'cuda:{d}')
+                        try:
+                            if self._model.device != self._device and not self.silent:
+                                print(f'Will switch training to cuda:{d}.')
+                        except:
+                            if not self.silent:
+                                print(f'Training on cuda:{d}.')
+                except:
+                    if not self.silent:
+                        print('Working on cpu because an exception occurred. Note that when training a big network you should train on GPU if available.')
+                    self._device = torch.device('cpu')
+            return self._device
+        
+    def gpu(self, value=True):
         """
         Configure the trainer to train on gpu, see to(device)
         """
-        self.to(gpu)
-
+        if self._gpu is not True:
+            self._gpu = value
+            try:
+                del self._device
+            except: pass
+        
     @property
     def metrics(self):
         """
@@ -961,7 +1030,8 @@ class Trainer:
         """
         path = self._model_filename(folder, filename, extension)
         torch.save(self.to_trt().state_dict(), path)
-        print(f'Saved the TRT model as {path}')
+        if not self.silent:
+            print(f'Saved the TRT model as {path}')
         
     def save_onnx(self, folder=None, filename=None, extension='onnx'):
         """
@@ -978,7 +1048,8 @@ class Trainer:
         path = self._model_filename(folder, filename, extension)
         x = next(iter(self.train_Xy))[0][:1]
         torch.onnx.export(self.model, x, path, verbose=True)
-        print(f'Saved the ONNX model as {path}')
+        if not self.silent:
+            print(f'Saved the ONNX model as {path}')
         
         
     def revert(self, label):
@@ -1217,6 +1288,12 @@ class Trainer:
                                      annot={'phase':'valid', 'epoch':self.subepochid}, **log)
         return metrics
 
+    def validate(self, pbar = None):
+        epochloss, epoch_y, epoch_y_pred = self._validate(pbar)
+        metrics = self.evaluator.compute_metrics(epoch_y, epoch_y_pred)
+        metrics['loss'] = epochloss
+        return metrics
+    
     def test(self):
         """
         Compute the metrics over the test set. 
@@ -1225,17 +1302,11 @@ class Trainer:
         Returns: {}
             a dictionary with the computed metrics over the testset
         """
-        epoch_y_pred = []
-        epoch_y = []
 
-        with self.eval_mode:
-            for *X, y in self.test_Xy:
-                loss, y_pred = self._loss_forward_xy(*X, y=y)
-                epoch_y_pred.append(to_numpy(y_pred))
-                epoch_y.append(to_numpy(y))
-            epoch_y = np.concatenate(epoch_y, axis=0)
-            epoch_y_pred = np.concatenate(epoch_y_pred, axis=0)
-        return self.compute_metrics(epoch_y, epoch_y_pred)
+        epochloss, epoch_y, epoch_y_pred = self._test()
+        metrics = self.compute_metrics(epoch_y, epoch_y_pred)
+        metrics['loss'] = epochloss
+        return metrics
     
     def _test(self, pbar=None):
         """
@@ -1306,7 +1377,7 @@ class Trainer:
         self._start_time = timeit.default_timer()
         return timeit.default_timer() - t
     
-    def cross_validate(self, epochs, lr, cycle=1, silent=True, test=True, earlystop=False, reset_evaluator=True, log={}, debug=False, remove_outliers_sd=None, **kwargs):
+    def cross_validate(self, epochs, lr, cycle=1, silent=True, test=True, earlystop=False, reset_evaluator=True, log={}, debug=False, repeat=1, separate=False, **kwargs):
         """
         Only works with a Databunch from a DFrame that is configured for n-fold cross validation. 
         The model is trained n times (reinitializing every time), and the average metric is reported 
@@ -1327,52 +1398,50 @@ class Trainer:
                 run the test set every cycle (used for n-fold cross validation)
             log: {}
                 see train(log), the cross validator extends the log with a folds column.
-            remove_outliers_sd: float (None)
-                for cross_validation estimations with an unstable setup (hard to converge), 
-                iteratively removes all scores for which the loss exceeds 
-                this many standeviations from the mean loss.
             **kwargs: passed to train()
         """
         from ..data import Databunch
         test_dl = self.test_dl if test else None
-        ys = []
-        ypreds = []
-        n = []
-        losses = []
-        for i, data in tqdm(enumerate(self.databunch.iter_folds()), total=self.databunch.folds):
-            self.reset_model()
-            self.data = data
-            self.train(epochs, lr, cycle=cycle, pbar=False, log=log, 
-                          test=test, silent=silent, earlystop=earlystop, 
-                          validate=False, **kwargs)
-            ys.append(self.lowest_validtest_y)
-            ypreds.append(self.lowest_validtest_y_pred)
-            losses.append(self.lowest_validtest_loss)
-            n.append(len(self.lowest_validtest_y))
-
-        if remove_outliers_sd is not None:
-            go = True
-            while go:
-                go = False
-                mean = np.mean(losses)
-                std = np.std(losses)
-                for i in range(len(n)-1, -1, -1):
-                    if losses[i] > mean + remove_outliers_sd * std:
-                        del ys[i]
-                        del ypreds[i]
-                        del losses[i]
-                        del n[i]
-                        go = True
-
-        y = np.concatenate(ys, axis=0)
-        y_pred = np.concatenate(ypreds, axis=0)
-        metrics = self.compute_metrics(y, y_pred)
-        metrics['loss'] = sum(losses) / sum(n)
-        return pd.DataFrame([metrics])      
+        ys = [None] * self.databunch.folds
+        ypreds = [None] * self.databunch.folds
+        n = [ 0 ] * self.databunch.folds
+        losses = [ np.Inf ] * self.databunch.folds
+        tq = tqdm(total=self.databunch.folds * repeat)
+        for j in range(repeat):
+            for i, data in enumerate(self.databunch.iter_folds()):
+                self.reset_model()
+                self.data = data
+                if reset_evaluator:
+                    self.reset_evaluator()
+                self.train(epochs, lr, cycle=cycle, pbar=False, log=log, 
+                              test=test, silent=silent, earlystop=earlystop, 
+                              validate=False, **kwargs)
+                if self.lowest_validtest_loss < losses[i]:
+                    ys[i] = self.lowest_validtest_y
+                    ypreds[i] = self.lowest_validtest_y_pred
+                    losses[i] = self.lowest_validtest_loss
+                    n[i] = len(self.lowest_validtest_y)
+                tq.update(1)
+        tq.close()
+        if separate:
+            for y, y_pred, eloss, en in zip(ys, ypreds, losses, n):
+                metrics = self.compute_metrics(y, y_pred)
+                metrics['loss'] = eloss / en
+                try:
+                    r = pd.concat([r, pd.DataFrame([metrics])])
+                except:
+                    r = pd.DataFrame([metrics])
+        else:  
+            y = np.concatenate(ys, axis=0)
+            y_pred = np.concatenate(ypreds, axis=0)
+            metrics = self.compute_metrics(y, y_pred)
+            metrics['loss'] = sum(losses) / sum(n)
+            r = pd.DataFrame([metrics])
+        return r   
     
     def optimize(self, func, *target, n_trials=None, timeout=None, catch=(), callbacks=None, 
                  gc_after_trial=True, show_progress_bar=False, 
-                 grid=None, evaluator=None, n_jobs=1):
+                 grid=None, n_jobs=1, loadout=[]):
         """
         Run n_trials on the given func to optimize settings and hyperparameters. This uses an 
         extension to the Optuna library tio create a study. This extension allows to define your
@@ -1382,16 +1451,31 @@ class Trainer:
             func: callable
                 a function that is called to perform a trail and receives the Trainer and trial object.
                 
+            *target: tuple[str]
+                names of the objective to be optimized in the study. When no targets are
+                given, the targets are set to the 'loss' in combination to all computed
+                metrics. By default, the loss is minimized and the other objectives are
+                maximized, which can be overruled by specifying directions. When there is
+                no metric, this means that 'loss' will be optimized. The specified targets
+                must match the values returned by the trail function. The recommended way
+                to specify these is by returning trainer.optimum().
+                
             n_trials: int (None)
-                number of trails to perform
+                number of trails to perform. When set to None and using grid search,
+                n_trials is set to the number of combinations for all grid search
+                options.
 
             grid: dict (None)
                 when grid is not None, a grid search is performed over the given values, e.g.
                 grid={lr:[1e-3, 1e-2], batch-size=[32, 64]}
-
-            evaluator: Evaluator (None)
-                if set, this Evalauator is used for all trials, otherwise every trial
-                will obtain a new Evaluator. 
+                
+            loadout: [any] ()
+                The loadout consists of a list values that are passed to your trail function.
+                The number of arguments in the loadout must match the number of
+                positional arguments of the trial function. This allows you to pass
+                a trainer, model, evaluator of any type of value by reference.
+                The string values 'trainer', 'evaluator' and 'model', will be 
+                automatically replaced by the current trainer, evaluator and model.
                 
             For the other arguments, see Optuna.Study.optimize
         
@@ -1400,9 +1484,19 @@ class Trainer:
         """
         if grid is not None and n_trials is None:
             n_trials = np.prod( [ len(v) for v in grid.values() ])
-        study = self.study(*target, grid=grid, evaluator=evaluator)
+        if grid is not None and len(target) == 0:
+            target = tuple(grid.keys())
+        loadout = [ self if l == 'trainer' else l for l in loadout ]
+        loadout = [ self.evaluator if l == 'evaluator' else l for l in loadout ]
+        loadout = [ self.model if l == 'model' else l for l in loadout ]
+        if len(target) == 0:
+            try:
+                target = ['loss'] + [ m.__name__ for m in self.metrics ]
+            except: pass
+        study = self.study(*target, grid=grid)
         study.optimize(func, n_trials=n_trials, timeout=timeout, catch=catch, callbacks=callbacks,
-                      gc_after_trial=gc_after_trial, show_progress_bar=show_progress_bar, n_jobs=n_jobs)
+                      gc_after_trial=gc_after_trial, show_progress_bar=show_progress_bar, n_jobs=n_jobs,
+                      loadout=loadout)
         return study
     
     def train(self, epochs, lr=None, cycle=1, save=None, 
@@ -1410,7 +1504,7 @@ class Trainer:
               weight_decay=None, betas=None, 
               save_lowest=False, save_highest=False, silent=False, pbar=None,
               targetloss=None, targettrainloss=None, earlystop=False, 
-              validate=True, log={}, test=False):
+              validate=True, log={}, test=False, gpu=None):
         """
         Train the model for the given number of epochs. Loss and metrics
         are logged during training in an evaluator. If a model was already
@@ -1437,7 +1531,7 @@ class Trainer:
                 every epoch. 
                 The cycle setting is remembered for consecutive calls to train.
             
-            silent: bool (False)
+            silent: bool (None)
                 whether to report progress. Note that even when silent=True
                 the metrics are still logged at the end of every cycle.
             
@@ -1498,100 +1592,112 @@ class Trainer:
                 
             test: bool (False)
                 run the test set every cycle (used for n-fold cross validation)
+                
+            gpu: int/bool (None)
+                when set, reassign training to a GPU/CPU. When set to True, the
+                GPU with the lowest workload is selected. This does take more time
+                to assess the GPU workloads and move the model, but may save time
+                when a better option is found.
+                See trainer.gpu() for more info.
         """
-        self.lowest_validloss = None
-        self.cycle = cycle
-        self._scheduler_start = self.epochid # used by OneCycleScheduler
-        self._scheduler_epochs = epochs
-        self.del_optimizer()
-        self.lr = lr or self.lr
-        if weight_decay is not None and self.weight_decay != weight_decay:
-            self.weight_decay = weight_decay
-        if betas is not None and self.betas != betas:
-            self.betas = betas
-        if optimizer and self._optimizer_class != optimizer:
-            self.optimizer = optimizer
-        if scheduler is not False:
-            self.scheduler = scheduler
-        self._cyclesnotimproved = 0
-        self._lastvalidation = None
-        model = self.model
-        torch.set_grad_enabled(False)
-        maxepoch = self.epochid + epochs
-        self._epochspaces = int(math.log(maxepoch)/math.log(10)) + 1
-        if pbar is None:
-            if test:
-                self.currentpbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, self.test_dl, silent=silent)
+        if silent is None:
+            silent = self.silent
+        with silencetrainer(self, silent):
+            self.lowest_validloss = None
+            self.cycle = cycle
+            self._scheduler_start = self.epochid # used by OneCycleScheduler
+            self._scheduler_epochs = epochs
+            self.del_optimizer()
+            self.lr = lr or self.lr
+            if weight_decay is not None and self.weight_decay != weight_decay:
+                self.weight_decay = weight_decay
+            if betas is not None and self.betas != betas:
+                self.betas = betas
+            if optimizer and self._optimizer_class != optimizer:
+                self.optimizer = optimizer
+            if scheduler is not False:
+                self.scheduler = scheduler
+            if gpu is not None:
+                self.gpu(gpu)
+            self._cyclesnotimproved = 0
+            self._lastvalidation = None
+            model = self.model
+            torch.set_grad_enabled(False)
+            maxepoch = self.epochid + epochs
+            self._epochspaces = int(math.log(maxepoch)/math.log(10)) + 1
+            if pbar is None:
+                if test:
+                    self.currentpbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, self.test_dl, silent=silent)
+                else:
+                    self.currentpbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, silent=silent)
             else:
-                self.currentpbar = tqdm_trainer(epochs, cycle, self.train_dl, self.valid_dl, silent=silent)
-        else:
-            self.currentpbar = pbar
-        self._time()
-        self._log_reset()
-        check_scheduler = self.scheduler.__class__ == OneCycleLR
-        if cycle < 1:
-            log_batches = np.linspace(0, len(self.train_dl), int(round(1 / self.cycle)) + 1)[1:]
-            log_batches = { int(round(b))-1 for b in log_batches }
-        else:
-            log_batches = { len(self.train_dl)-1 }
-        log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
-        self._log_reset()
-        try:
-            for i in range(epochs):
-                with self.train_mode:
-                    for self.batch, (*X, y) in enumerate(self.train_Xy):
-                        #print(self.cycle, len(self.train_dl), batch, log_batches, log_next_epoch, log_this_epoch)
-                        if check_scheduler and self.scheduler._step_count == self.scheduler.total_steps:
-                            self.del_scheduler()
-                            self.scheduler
-                        loss, y_pred = self.train_batch(*X, y=y)
-                        self.scheduler.step()
-
-                        if self.currentpbar is not None and self.currentpbar is not False:
-                            self.currentpbar.update(self.train_dl.batch_size)
-                        #print(self.epochid, log_next_epoch, batch, log_batches)
-                        if log_next_epoch == self.epochid:
-                            y_pred = self.post_forward(y_pred)
-                            if self._debug:
-                                self.lastypfw = y_pred                          
-                            self._log_increment(loss, y, y_pred)
-                            if self.batch in log_batches:
-                                if self.batch == len(self.train_dl) - 1:
-                                    self.batch = 0
-                                    self.epochid += 1
-                                    log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
-                                validloss, y, y_pred = self._validate(pbar = self.currentpbar)      
-                                if validate:
-                                    validmetrics = self._validate_store(validloss, y, y_pred, log=log)
-                                    self._log(validloss, validmetrics, log, silent)
-                                    if test:
-                                        testloss, y, y_pred = self._test(pbar=self.currentpbar)
-                                        testmetrics = self._test_store(testloss, y, y_pred, log=log)
-                                if self.lowest_validloss is None or validloss < self.lowest_validloss:
-                                    if not validate and test:
-                                            testloss, y, y_pred = self._test(pbar=self.currentpbar)
-                                    self.lowest_validloss = validloss
-                                    self.lowest_validtest_loss = testloss if test else validloss
-                                    self.lowest_validtest_y = y
-                                    self.lowest_validtest_y_pred = y_pred
-                                    if save_lowest is not None and save_lowest:
-                                        self.commit('lowest')
-
-                                if save is not None and save:
-                                    self.commit(f'{save}-{self.epochid}')
-
-                                if self._check_early_termination(validloss, targetloss, self._current_train_loss, targettrainloss, earlystop, silent):
-                                    self._log_reset()
-                                    raise StopIteration
-                                self._log_reset()
-                        elif self.batch == len(self.train_dl) - 1:
-                            self.epochid += 1
-        except StopIteration:
-            pass
-        if pbar is None:
+                self.currentpbar = pbar
+            self._time()
+            self._log_reset()
+            check_scheduler = self.scheduler.__class__ == OneCycleLR
+            if cycle < 1:
+                log_batches = np.linspace(0, len(self.train_dl), int(round(1 / self.cycle)) + 1)[1:]
+                log_batches = { int(round(b))-1 for b in log_batches }
+            else:
+                log_batches = { len(self.train_dl)-1 }
+            log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
+            self._log_reset()
             try:
-                self.currentpbar.close()    
-            except: pass
+                for i in range(epochs):
+                    with self.train_mode:
+                        for self.batch, (*X, y) in enumerate(self.train_Xy):
+                            #print(self.cycle, len(self.train_dl), batch, log_batches, log_next_epoch, log_this_epoch)
+                            if check_scheduler and self.scheduler._step_count == self.scheduler.total_steps:
+                                self.del_scheduler()
+                                self.scheduler
+                            loss, y_pred = self.train_batch(*X, y=y)
+                            self.scheduler.step()
+
+                            if self.currentpbar is not None and self.currentpbar is not False:
+                                self.currentpbar.update(self.train_dl.batch_size)
+                            #print(self.epochid, log_next_epoch, batch, log_batches)
+                            if log_next_epoch == self.epochid:
+                                y_pred = self.post_forward(y_pred)
+                                if self._debug:
+                                    self.lastypfw = y_pred                          
+                                self._log_increment(loss, y, y_pred)
+                                if self.batch in log_batches:
+                                    if self.batch == len(self.train_dl) - 1:
+                                        self.batch = 0
+                                        self.epochid += 1
+                                        log_next_epoch = self.epochid + cycle - 1 if cycle > 1 else self.epochid
+                                    validloss, y, y_pred = self._validate(pbar = self.currentpbar)      
+                                    if validate:
+                                        validmetrics = self._validate_store(validloss, y, y_pred, log=log)
+                                        self._log(validloss, validmetrics, log)
+                                        if test:
+                                            testloss, y, y_pred = self._test(pbar=self.currentpbar)
+                                            testmetrics = self._test_store(testloss, y, y_pred, log=log)
+                                    if self.lowest_validloss is None or validloss < self.lowest_validloss:
+                                        if not validate and test:
+                                                testloss, y, y_pred = self._test(pbar=self.currentpbar)
+                                        self.lowest_validloss = validloss
+                                        self.lowest_validtest_loss = testloss if test else validloss
+                                        self.lowest_validtest_y = y
+                                        self.lowest_validtest_y_pred = y_pred
+                                        if save_lowest is not None and save_lowest:
+                                            self.commit('lowest')
+
+                                    if save is not None and save:
+                                        self.commit(f'{save}-{self.epochid}')
+
+                                    if self._check_early_termination(validloss, targetloss, self._current_train_loss, targettrainloss, earlystop):
+                                        self._log_reset()
+                                        raise StopIteration
+                                    self._log_reset()
+                            elif self.batch == len(self.train_dl) - 1:
+                                self.epochid += 1
+            except StopIteration:
+                pass
+            if pbar is None:
+                try:
+                    self.currentpbar.close()    
+                except: pass
     
     def _log_reset(self):
         self._epochloss = 0
@@ -1609,14 +1715,14 @@ class Trainer:
     def _current_train_loss(self):
         return self._epochloss / self._n
         
-    def _log(self, validloss, validmetrics, log, silent):
+    def _log(self, validloss, validmetrics, log):
         #self._epochloss /= self._n
         self._epoch_y = np.concatenate(self._epoch_y, axis=0)
         self._epoch_y_pred = np.concatenate(self._epoch_y_pred, axis=0)
         metrics = self.evaluator._store_metrics(self._epoch_y, self._epoch_y_pred, 
                                                 annot={'phase':'train', 'epoch':self.subepochid}, **log)
         self.evaluator._store_metric('loss', self._current_train_loss, annot={'phase':'train', 'epoch':self.subepochid}, **log)
-        if not silent:
+        if not self.silent:
             reportmetric = ''
             for m in self.metrics:
                 m = m.__name__
@@ -1628,19 +1734,19 @@ class Trainer:
             
     def _check_early_termination(self, validloss, targetloss, 
                                  trainloss, targettrainloss,
-                                 earlystop, silent):
+                                 earlystop):
         if targetloss is not None and validloss <= targetloss:
             try:
                 self.currentpbar.finish_fold()
             except: pass
-            if not silent:
+            if not self.silent:
                 print(f'Early terminating because the validation loss {validloss} reached the target {targetloss}.')
             return True
         if targettrainloss is not None and trainloss <= targettrainloss:
             try:
                 self.currentpbar.finish_fold()
             except: pass
-            if not silent:
+            if not self.silent:
                 print(f'Early terminating because the train loss {trainloss} reached the target {targettrainloss}.')
             return True
         if earlystop:
@@ -1658,7 +1764,7 @@ class Trainer:
                         try:
                             self.currentpbar.finish_fold()
                         except: pass
-                        if not silent:
+                        if not self.silent:
                             if earlystop == 1 or earlystop == True:
                                 print(f'Early terminating because the validation loss has not improved the last cycle.')
                             else:
@@ -1786,7 +1892,7 @@ class Trainer:
 
     def study(self, *target, storage=None, sampler=None, pruner=None, 
               study_name=None, direction=None, load_if_exists=False, 
-              directions=None, grid=None, evaluator=None):
+              directions=None, grid=None):
         """
         Creates an (extended) Optuna Study to study how hyperparameters affect the given target function 
         when training a model. This call will just instantiate and return the study object. Typical use is to
@@ -1808,12 +1914,55 @@ class Trainer:
             Study (which is a subclass of Optuna.study.Study)
         """
         from ..evaluate.study import Study
-        return Study.create_study(*target, trainer=self, storage=storage, 
+        return Study.create_study(*target, storage=storage, 
                                   sampler=sampler, pruner=pruner, 
                                   study_name=study_name, direction=direction, 
                                   load_if_exists=load_if_exists, directions=directions, 
-                                  grid=grid, evaluator=evaluator)
+                                  grid=grid)
     
+    def metrics_optimum(self, *target, direction=None, directions=None, **select):
+        """
+        Finds the cycle at which optimal results where obtained over the validation set, on the given optimization
+        metric. 
+        
+        Args:
+            *target: str or callable ('loss')
+                names or metric functions that are used to decide what training cycle the model was most optimal
+
+            direction: str or [ str ] (None)
+                for every target: 'minimize' or 'maximize' to find the highest or lowest value on the given target
+                If None, 'minimize' is used when optimize is 'loss', otherwise 'maximize' is used
+ 
+            directions: [ str ] (None)
+                same as direction, but now a list of 'minimize' or 'maximize' for multipe targets.
+            
+            select: {} (None)
+                When None, the log={} values from the last call to train() are used. Otherwise, select
+                is a dictionary with values that distinguish the results from the current trial 
+                to the previous trails, which is needed to find the single best epoch of the current trail
+                to return the metrics for that epoch.
+                
+        Returns:
+            { targetname:value }
+            A dictionary of target values 
+        """
+        if len(target) == 0:
+            target = ['loss'] + [ m.__name__ for m in self.metrics ]
+        else:
+            target = [ t.__name__ if callable(t) else t for t in target ]
+            for t in target:
+                try:
+                    assert t == 'loss' or t in { m.__name__ for m in self.metrics }, \
+                        f'Target {t} should be loss or a metric that is registered for the trainer'
+                except:
+                    assert False, f'Exception comparing target {t} to the registered metrics of the trainer'
+        if direction is None and directions is None:
+            if len(target) > 1:
+                directions = [ 'minimize' if t == 'loss' else 'maximize' for t in target ]
+            else:
+                direction = 'minimize' if target[0] == 'loss' else 'maximize'
+        return self.evaluator.metrics_optimum(*target, direction=direction, directions=directions, **select)
+
     def optimum(self, *target, direction=None, directions=None, **select):
         """
         Finds the cycle at which optimal results where obtained over the validation set, on the given optimization
@@ -1889,7 +2038,7 @@ class Trainer:
                 to matplotlib inline when it is done. It cannot (yet) detect the previous backend, so this
                 will only work when inline is the defaut mode.
         """
-        if intecractive:
+        if interactive:
             run_magic('matplotlib', 'notebook')
         with tuner(self, exprange(lr[0], lr[1], steps), self.set_lr, label='lr', yscale='log', smooth=smooth, cache_valid=cache_valid, **kwargs) as t:
             t.run()

@@ -39,7 +39,7 @@ class Evaluator:
         try:
             y = y.to_numpy()
         except: pass
-        return y.reshape(-1) if len(y.shape) > 1 else y
+        return y.reshape(-1) if len(y.shape) > 1 and y.shape[1] == 1 else y
     
     @property
     def df(self):
@@ -208,11 +208,11 @@ class Evaluator:
         if 'epoch' in m.columns: # PyTorch mode, lets find the optimal epoch
             epochs = m.epoch[m.value == optimum]
             test = test[test.epoch.isin(epochs)]
-            if len(epochs) > 1 and len(targets) > 1:
-                validation = validation[validation.epoch.isin(epochs)]
-                return self.metrics_optimum( *target[1:], directions=directions[1:], validation=validation, test=test)
-            elif len(epochs) > 1:
-                test = test.loc[test.epoch == epochs[0]]
+            #if len(epochs) > 1 and len(targets) > 1:
+            #    validation = validation[validation.epoch.isin(epochs)].iloc[-1]
+            #    return self.metrics_optimum( *targets, directions=directions, validation=validation, test=test)
+            if len(epochs) > 1:
+                test = test.loc[test.epoch == epochs.iloc[-1]]
         r = {t:test.value[test.metric == t] for t in targets }
         r = {t:(v.item() if len(v) == 1 else v.iloc[-1].item()) for t, v in r.items()}
         return r

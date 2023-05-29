@@ -22,7 +22,7 @@ def create_path(p, mode=0o777):
 def image_folder():
     return f'/tmp/{getuser()}/images'
 
-def _fast_torchvision(func, root=None, train=False, transform=None, validtransform=None, 
+def _fast_torchvision(func, root=None, train=False, transform=None, testtransform=None, 
                       size=None, download=False, **kwargs):
     """
     A Dataset for MNIST, that caches the dataset on gpu for faster processing. 
@@ -53,21 +53,21 @@ def _fast_torchvision(func, root=None, train=False, transform=None, validtransfo
     if root is None:
         try:
             return func(root='~/.pipetorchuser', download=False, train=train, 
-                        transform=transform, validtransform=validtransform, size=size, **kwargs)
+                        transform=transform, testtransform=testtransform, size=size, **kwargs)
         except: pass
         try:
             return func(root='~/.pipetorch', download=False, train=train, 
-                        transform=transform, validtransform=validtransform, size=size, **kwargs)
+                        transform=transform, testtransform=testtransform, size=size, **kwargs)
         except: pass
         root = '~/.pipetorchuser'
     return func(root=root, download=download, train=train, 
-                transform=transform, validtransform=validtransform, size=size, **kwargs)
+                transform=transform, testtransform=testtransform, size=size, **kwargs)
 
 class _FastCIFAR(CIFAR10):
-    def __init__(self, root=None, train=True, transform=None, validtransform=None, 
+    def __init__(self, root=None, train=True, transform=None, testtransform=None, 
                  normalize=True, size=None, **kwargs):
         super().__init__(root=root, train=train, **kwargs)
-        self.transform=self.extend_transform(transform if train else validtransform, size)
+        self.transform=self.extend_transform(transform if train else testtransform, size)
         # Scale data to [0,1]
         self.data = torch.tensor(self.data).float().div(255)
         self.data = self.data.permute(0, 3, 1, 2)
@@ -84,8 +84,8 @@ class _FastCIFAR(CIFAR10):
         if size is None:
             return transform
         if transform is None:
-            return transforms.Resize(size)
-        return transforms.Compose([transforms.Resize(size), transform])
+            return transforms.Resize(size, antialias=True)
+        return transforms.Compose([transforms.Resize(size, antialias=True), transform])
         
     def __getitem__(self, index):
         if self.transform:
@@ -93,10 +93,10 @@ class _FastCIFAR(CIFAR10):
         return self.data[index], self.targets[index]
 
 class _FastFashionMNIST(FashionMNIST):
-    def __init__(self, root=None, train=True, transform=None, validtransform=None, 
+    def __init__(self, root=None, train=True, transform=None, testtransform=None, 
                  size=None, normalize=True, **kwargs):
         super().__init__(root=root, train=train, **kwargs)
-        self.transform=self.extend_transform(transform if train else validtransform, size)
+        self.transform=self.extend_transform(transform if train else testtransform, size)
         self.data = self.data.unsqueeze_(dim=1).float().div(255)
         if normalize:
             self.data = self.data.div(0.5).sub(0.5)
@@ -107,8 +107,8 @@ class _FastFashionMNIST(FashionMNIST):
         if size is None:
             return transform
         if transform is None:
-            return transforms.Resize(size)
-        return transforms.Compose([transforms.Resize(size), transform])
+            return transforms.Resize(size, antialias=True)
+        return transforms.Compose([transforms.Resize(size, antialias=True), transform])
         
     def __getitem__(self, index):
         if self.transform:
@@ -116,10 +116,10 @@ class _FastFashionMNIST(FashionMNIST):
         return self.data[index], self.targets[index]
 
 class _FastMNIST(MNIST):
-    def __init__(self, root, train=True, transform=None, validtransform=None,
+    def __init__(self, root, train=True, transform=None, testtransform=None,
                  size=None, normalize=True, **kwargs):
         super().__init__(root=root, train=train, **kwargs)
-        self.transform=self.extend_transform(transform if train else validtransform, size)
+        self.transform=self.extend_transform(transform if train else testtransform, size)
 
         # Scale data to [0,1]
         self.data = self.data.unsqueeze(1).float().div(255)
@@ -133,8 +133,8 @@ class _FastMNIST(MNIST):
         if size is None:
             return transform
         if transform is None:
-            return transforms.Resize(size)
-        return transforms.Compose([transforms.Resize(size), transform])
+            return transforms.Resize(size, antialias=True)
+        return transforms.Compose([transforms.Resize(size, antialias=True), transform])
         
     def __getitem__(self, index):
         if self.transform:
@@ -157,31 +157,31 @@ class _FastMNIST3(_FastMNIST):
         return img, target
     
 @is_documented_by(_fast_torchvision, {'MNIST':'CIFAR10', 'SIZE':'(3,32,32)'})
-def FastCIFAR(root=None, train=False, transform=None, validtransform=None, 
+def FastCIFAR(root=None, train=False, transform=None, testtransform=None, 
               normalize=True, download=False, **kwargs):
     return _fast_torchvision(_FastCIFAR, root=root, download=download, train=train, transform=transform, 
-                             validtransform=validtransform, normalize=normalize, **kwargs)
+                             testtransform=testtransform, normalize=normalize, **kwargs)
 
 @is_documented_by(_fast_torchvision, {'SIZE':'(1,28,28)'})
-def FastMNIST(root=None, train=True, transform=None, validtransform=None,
+def FastMNIST(root=None, train=True, transform=None, testtransform=None,
               size=None, normalize=True, download=False, **kwargs):
     return _fast_torchvision(_FastMNIST, root=root, download=download, train=train, transform=transform, 
-                             validtransform=validtransform, normalize=normalize, **kwargs)
+                             testtransform=testtransform, normalize=normalize, **kwargs)
                  
 @is_documented_by(_fast_torchvision, {'MNIST':'FashionMNIST', 'SIZE':'(3,28,28)'})
-def FastFashionMNIST(root=None, train=True, transform=None, validtransform=None,
+def FastFashionMNIST(root=None, train=True, transform=None, testtransform=None,
                      size=None, download=False, normalize=True, **kwargs):
     return _fast_torchvision(_FastFashionMNIST, root=root, download=download, train=train, transform=transform,
-                             validtransform=validtransform, normalize=normalize, **kwargs)
+                             testtransform=testtransform, normalize=normalize, **kwargs)
                  
 @is_documented_by(_fast_torchvision, {'SIZE':'(3,28,28)'})
-def FastMNIST3(root=None, train=True, transform=None, validtransform=None,
+def FastMNIST3(root=None, train=True, transform=None, testtransform=None,
                size=None, normalize=True, download=False, **kwargs):
     return _fast_torchvision(_FastMNIST3, root=root, download=download, train=train, transform=transform, 
-                             validtransform=validtransform, normalize=normalize, **kwargs)
+                             testtransform=testtransform, normalize=normalize, **kwargs)
 
-def _fast_databunch(func, root=None, test=False, valid_perc=0.1, batch_size=64, valid_batch_size=None,
-                    transform=None, validtransform=None, size=None, num_workers=2, shuffle=True, 
+def _fast_databunch(func, root=None, test=False, valid_perc=0.1, batch_size=64, test_batch_size=None,
+                    transform=None, testtransform=None, size=None, num_workers=2, shuffle=True, 
                     pin_memory=False, balance=False, collate=None, classes=None, 
                     normalized_mean=None, normalized_std=None, **kwargs):
     '''
@@ -207,43 +207,43 @@ def _fast_databunch(func, root=None, test=False, valid_perc=0.1, batch_size=64, 
         An extension to a Databunch that provides additional support for images, like image normalization,
         transformation and show_batch to show an example.    
     '''
-    train_ds = func(root, transform=transform, validtransform=validtransform, train=True, size=size, **kwargs)
+    train_ds = func(root, transform=transform, testtransform=testtransform, train=True, size=size, **kwargs)
     if test:
-        test_ds = func(root, transform=transform, validtransform=validtransform, train=False, size=size, **kwargs)
+        test_ds = func(root, transform=transform, testtransform=testtransform, train=False, size=size, **kwargs)
     else:
         test_ds = None
     return ImageDatabunch.from_train_test_ds(train_ds, test_ds, valid_perc=valid_perc, batch_size=batch_size, 
-                                             valid_batch_size=valid_batch_size, num_workers=num_workers, 
+                                             test_batch_size=test_batch_size, num_workers=num_workers, 
                                              shuffle=shuffle, pin_memory=pin_memory, balance=balance,
                                              collate=collate, classes=classes, normalized_mean=normalized_mean,
                                              normalized_std=normalized_std)
 
 @is_documented_by(_fast_databunch, {'SIZE':'(1,28,28)'}) 
-def mnist(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, validtransform=None, 
+def mnist(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, testtransform=None, 
           size=None, normalize=True, num_workers=2, **kwargs):
     return _fast_databunch(FastMNIST, root=root, test=test, valid_perc=valid_perc, batch_size=batch_size, 
-                           transform=transform, validtransform=validtransform, size=size, 
+                           transform=transform, testtransform=testtransform, size=size, 
                            normalize=normalize, num_workers=num_workers, **kwargs)
 
 @is_documented_by(_fast_databunch, {'SIZE':'(3,28,28)'}) 
-def mnist3(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, validtransform=None, 
+def mnist3(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, testtransform=None, 
           size=None, normalize=True, num_workers=2, **kwargs):
     return _fast_databunch(FastMNIST3, root=root, test=test, valid_perc=valid_perc, batch_size=batch_size, 
-                           transform=transform, validtransform=validtransform, size=size, 
+                           transform=transform, testtransform=testtransform, size=size, 
                            normalize=normalize, num_workers=num_workers, **kwargs)
 
 @is_documented_by(_fast_databunch, {'MNIST':'CIFAR10','SIZE':'(3,28,28)'}) 
-def cifar(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, validtransform=None, 
+def cifar(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, testtransform=None, 
           size=None, normalize=True, num_workers=2, **kwargs):
     return _fast_databunch(FastCIFAR, root=root, test=test, valid_perc=valid_perc, batch_size=batch_size, 
-                           transform=transform, validtransform=validtransform, size=size, 
+                           transform=transform, testtransform=testtransform, size=size, 
                            normalize=normalize, num_workers=num_workers, **kwargs)
 
 @is_documented_by(_fast_databunch, {'MNIST':'FashionMNIST','SIZE':'(3,28,28)'}) 
-def fashionmnist(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, validtransform=None, 
+def fashionmnist(root=None, test=False, valid_perc=0.1, batch_size=64, transform=None, testtransform=None, 
           size=None, normalize=True, num_workers=2, **kwargs):
     return _fast_databunch(FastFashionMNIST, root=root, test=test, valid_perc=valid_perc, batch_size=batch_size, 
-                           transform=transform, validtransform=validtransform, size=size, 
+                           transform=transform, testtransform=testtransform, size=size, 
                            normalize=normalize, num_workers=num_workers, **kwargs)
 
 def _gis_args(keywords, output_directory=None, 

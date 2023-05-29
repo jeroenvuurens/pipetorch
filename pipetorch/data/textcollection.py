@@ -36,12 +36,12 @@ class TextCollection:
             length.
     """
     
-    def __init__(self, train, valid=None, test=None, language='basic_english', min_freq=1, vocab=None, 
+    def __init__(self, train, test=None, valid=None, language='basic_english', min_freq=1, vocab=None, 
                  labels = None, specials=('<unk>', '<pad>'), collate=None):
         self._vocab = vocab
+        self.test = test
         self.train = train
         self.valid = valid
-        self.test = test
         self.language = language
         self.min_freq = min_freq
         self.labels = labels
@@ -49,7 +49,7 @@ class TextCollection:
         self.__collate = collate
     
     @classmethod
-    def from_iter(cls, train_iter, valid_iter=None, test_iter=None, **kwargs):
+    def from_iter(cls, train_iter, test_iter=None, valid_iter=None, **kwargs):
         """
         Reads a TextCollection from iterators. The most common use is from TorchText
         DataSets.
@@ -57,21 +57,21 @@ class TextCollection:
         Arguments:
             train_iter: str
                 iterator that is used as the train set, e.g. 'train.csv'
-            valid_iter: str (None)
-                iterator that is used as the valid set, e.g. 'valid.csv'
             test_iter: str (None)
                 iterator that is used as the test set, e.g. 'test.csv'
+            valid_iter: str (None)
+                iterator that is used as the valid set, e.g. 'valid.csv'
             **kwargs: see the TextCollection constructor for additional arguments
                       such as language, min_freq, vocab, labels, special, collate 
         Returns: TextCollection
         """
         train = TextDataSet.from_iter(train_iter)
-        valid = None if valid_iter is None else TextDataSet.from_iter(valid_iter)
         test = None if test_iter is None else TextDataSet.from_iter(test_iter)
-        return cls(train, valid=valid, test=test, **kwargs)
+        valid = None if valid_iter is None else TextDataSet.from_iter(valid_iter)
+        return cls(train, test=test, valid=valid, **kwargs)
     
     @classmethod
-    def from_csv(cls, train_filename, valid_filename=None, test_filename=None, **kwargs):
+    def from_csv(cls, train_filename, test_filename=None, valid_filename=None, **kwargs):
         """
         Reads a TextCollection from csv files. 
         
@@ -85,21 +85,21 @@ class TextCollection:
         Arguments:
             train_filename: str
                 the filename that is used as the train set, e.g. 'train.csv'
-            valid_filename: str (None)
-                the filename that is used as the valid set, e.g. 'valid.csv'
             test_filename: str (None)
                 the filename that is used as the test set, e.g. 'test.csv'
+            valid_filename: str (None)
+                the filename that is used as the valid set, e.g. 'valid.csv'
             **kwargs: see the TextCollection constructor for additional arguments
                       such as language, min_freq, vocab, labels, special, collate 
         Returns: TextCollection
         """
         train = TextDataSet.from_csv(train_filename)
-        valid = None if valid_filename is None else TextDataSet.from_csv(valid_filename)
         test = None if test_filename is None else TextDataSet.from_csv(test_filename)
-        return cls(train, valid=valid, test=test, **kwargs)
+        valid = None if valid_filename is None else TextDataSet.from_csv(valid_filename)
+        return cls(train, test=test, valid=valid, **kwargs)
 
     @classmethod
-    def from_kaggle(cls, dataset, train=None, valid=None, test=None, shared=True, force=False, **kwargs):
+    def from_kaggle(cls, dataset, train=None, test=None, valid=None, shared=True, force=False, **kwargs):
         """
         Reads a TextCollection from a Kaggle dataset. The files are forwarded to from_csv().
         
@@ -123,10 +123,10 @@ class TextCollection:
                 the username/dataset part of the kaggle url, e.g. uciml/autompg-dataset for 
             train: str (None)
                 the filename that is used as the train set, e.g. 'train.csv'
-            valid: str (None)
-                the filename that is used as the valid set, e.g. 'valid.csv'
             test: str (None)
                 the filename that is used as the test set, e.g. 'test.csv'
+            valid: str (None)
+                the filename that is used as the valid set, e.g. 'valid.csv'
             shared: bool (False)
                 save the dataset in ~/.pipetorch instead of ~/.pipetorchuser, allowing to share downloaded
                 files between users.
@@ -144,7 +144,7 @@ class TextCollection:
             test = k.file(test)
         if valid is not None:
             valid = k.file(valid)
-        return cls.from_csv(train, valid_filename=valid, test_filename=test, **kwargs)
+        return cls.from_csv(train, test_filename=test, valid_filename=valid, **kwargs)
 
     @classmethod
     def from_torchtext(cls, func, min_freq=1, collate='pad', **kwargs): 
@@ -181,37 +181,58 @@ class TextCollection:
         There are several options in TorchText to train with either padded of offset datasets.
         """
         if collate == 'offset':
-            return OffsetTextCollection(self.train, self.valid, test=self.test, 
+            return OffsetTextCollection(self.train, test=self.test, valid=self.valid, 
                     language=self.language, min_freq=self.min_freq, vocab=self._vocab, labels = self.labels, 
                     specials=self.specials)
         if collate == 'pad':
-            return PaddedTextCollection(self.train, self.valid, test=self.test,  
+            return PaddedTextCollection(self.train, test=self.test, valid=self.valid,  
                     language=self.language, min_freq=self.min_freq, vocab=self._vocab, labels = self.labels, 
                     specials=self.specials)
-        r = TextCollection(self.train, self.valid, test=self.test, 
+        r = TextCollection(self.train, test=self.test, valid=self.valid, 
                     language=self.language, min_freq=self.min_freq, vocab=self._vocab, labels = self.labels, 
                     specials=self.specials)
         r.__collate = collate
         return r   
     
-    def split(self, valid_perc, test_perc=None):
+    def split(self, *perc, test_perc=None, valid_perc=None):
         """
-        return: a splitted version the text collection.
-        valid_perc: the fraction of the training set to be used for validation
-        test_perc: the fraction of the training set to be used for testing
+        Creates out-of-sample test and valid sets.
         
+        Args:
+            perc, test_perc, valid_perc: float[0-1]
+                fraction of the data that is used resp. for the test and valid set.
+                When a fixed test set is used, the first positional argument is used as
+                valid_perc, otherwise as test_perc.
+
+        Returns: TextCollection
+            a shallow copy of this TextCollection that is configured to 
+            split the data in a train, test and/or valid set
+
         Note: you cannot resplit a textcollection that was already split, or if it has a fixed validation or test set.
         """
         assert test_perc is None or self.test is None, 'You cannot specify a test_perc if a fixed test set is given'
         assert self.valid is None, 'You cannot resplit a text collection that was already split or that has a fixed validation set'
         assert self.vocab_not_exists, 'You cannot split a text collection when a vocabulary is already built'
+        assert len(perc) < 2 or test_perc is None or valid_perc is None, 'Too many percentages'
+        assert len(perc) < 3, 'Too many percentages'
+        if len(perc) > 0:
+            if test_perc is None:
+                if self.test:
+                    valid_perc = perc[0]
+                else:
+                    test_perc = perc[0]
+            else:
+                valid_perc = perc[0]
+            if len(perc) == 2:
+                test_perc, valid_perc = 1
+                
         r = copy.copy(self)
         test_count = 0 if test_perc is None else round(test_perc * len(r.train))
-        valid_count = round(valid_perc * len(r.train))
+        valid_count = 0 if valid_perc is None else round(valid_perc * len(r.train))
         train_count = len(r.train) - test_count - valid_count
         #print(len(r.train), train_count, valid_count, test_count)
         #print(len(r.train), sum([train_count, valid_count, test_count]))
-        r.train, r.valid, r.test = random_split(r.train, [train_count, valid_count, test_count])
+        r.train, r.test, r.valid = random_split(r.train, [train_count, test_count, valid_count])
         return r
         
     @property
@@ -332,7 +353,7 @@ class TextCollection:
         vocabulary through db.vocab.
         """
         r = copy.copy(self)
-        db = Databunch(None, r.train, r.valid, r.test, batch_size=batch_size, valid_batch_size=batch_size, shuffle=shuffle, balance=balance, collate=r._collate, **kwargs)
+        db = Databunch(None, r.train, r.test, r.valid, batch_size=batch_size, test_batch_size=batch_size, shuffle=shuffle, balance=balance, collate=r._collate, **kwargs)
         db.textcollection = r
         db.vocab = r.vocab
         if r._using_pretrained():

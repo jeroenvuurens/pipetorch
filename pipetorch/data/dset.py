@@ -535,7 +535,7 @@ class _DSet:
             
     @property
     def _y_transposed(self):
-        return self._y_scaled.squeeze(axis=1) if self._vectory else self._y_scaled
+        return self._y_scaled.squeeze(axis=1) if self._vectory and self._y_scaled.shape[1] == 1 else self._y_scaled
     
     @property
     def y(self):
@@ -1084,7 +1084,7 @@ class GroupedDSet(DataFrameGroupBy, _DSet):
     
     def __iter__(self):
         for group, subset in super().__iter__():
-            yield group, selfl._copy_meta(subset)
+            yield group, self._copy_meta(subset)
             
     def get_group(self, name, obj=None):
         return self._dset( super().get_group(name, obj=obj) )
